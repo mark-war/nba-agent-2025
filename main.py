@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 
+from startup import player_model, team_model, df_players, df_teams, injuries_df
+
 app = FastAPI(
     title="NBA Betting Agent Pro 2025-26",
     description="Complete betting intelligence with live odds, injuries, and predictions",
@@ -23,13 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load models
-player_model = joblib.load("models/player_model_2025.pkl")
-team_model = joblib.load("models/team_model_2025.pkl")
-
-# Load data with caching
-df_players = pd.read_csv("data/2025_26_players.csv")
-df_teams = pd.read_csv("data/2025_26_teams.csv")
 
 # Cache settings
 CACHE_DURATION = timedelta(hours=1)
@@ -64,7 +59,6 @@ def save_games_cache(games: List[Dict], date_str: str):
 
 # Injury status
 try:
-    injuries_df = pd.read_csv("data/injuries.csv")
     INJURY_STATUS = {}
     for _, row in injuries_df.iterrows():
         name = str(row['player_name']).strip()
