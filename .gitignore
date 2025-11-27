@@ -1,68 +1,45 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-ENV/
-env.bak/
-venv.bak/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-*.manifest
-*.spec
-
-# Virtual Environment
-venv/
-ENV/
-env/
-.venv/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# PyCharm / IDE
-.idea/
-*.iml
-*.iws
-*.ipr
-*.swp
-*~
-
-# VS Code
-.vscode/
-
-# Mac
-.DS_Store
-
-# Windows
-Thumbs.db
-Desktop.ini
-
-# Your project specific
+# ==========================
+# Data (never commit raw/processed data)
+# ==========================
+data/raw/
+data/processed/
 data/*.csv
-data/*.pkl
-models/*.pkl
-*.pyc
+data/*.json
+data/*.parquet
+data/*.feather
+
+# ==========================
+# Trained models (never commit)
+# ==========================
+models/
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.h5
+*.keras
+*.onnx
+*.mlmodel
+
+# ==========================
+# Temporary / cache
+# ==========================
 __pycache__/
-*.log
-
-# Render / Deployment
-.render/
-render.yaml
-
-# Secrets
+*.pyc
 .env
-.env.local
+.venv/
+venv/
+.DS_Store
+.ipynb_checkpoints/
+
+# ==========================
+# Large files you might accidentally add
+# ==========================
+*.zip
+*.tar.gz
+*.gzip
+*.7z
+
+# If you ever use Git LFS for small static datasets
+# !data/static/*.csv          # uncomment if you really want to track tiny ones
