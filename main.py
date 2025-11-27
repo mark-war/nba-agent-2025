@@ -57,6 +57,33 @@ def save_games_cache(games: List[Dict], date_str: str):
     except Exception as e:
         print(f"Cache save error: {e}")
 
+# Add this near the top with your other cache functions
+def load_cached_best_bets(date_str: str):
+    cache_file = Path(f"data/bestbets_{date_str}.json")
+    if cache_file.exists():
+        try:
+            with open(cache_file) as f:
+                cache = json.load(f)
+                cache_time = datetime.fromisoformat(cache['timestamp'])
+                if datetime.now() - cache_time < CACHE_DURATION:
+                    return cache['best_bets']
+        except Exception as e:
+            print(f"Best bets cache load error: {e}")
+    return None
+
+def save_best_bets_cache(best_bets: List[Dict], date_str: str):
+    cache_file = Path(f"data/bestbets_{date_str}.json")
+    cache = {
+        'timestamp': datetime.now().isoformat(),
+        'best_bets': best_bets,
+        'date': date_str
+    }
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        print(f"Best bets cache save error: {e}")
+
 # Injury status
 try:
     INJURY_STATUS = {}
@@ -423,52 +450,142 @@ def get_todays_games(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch games: {str(e)}")
 
-# === BEST BETS ===
-@app.post("/best-bets")
-def get_best_bets(req: BestBetsRequest):
-    """Get top betting opportunities for the day"""
-    from utils import fetch_todays_games_with_odds
-    
-    games = fetch_todays_games_with_odds()
+from fastapi import Depends
+
+# === BEST BETS - FULLY DATE-AWARE + CACHED + NO ERRORS ===
+def get_best_bets_common(
+    date: Optional[str] = None,
+    days_offset: Optional[int] = None,
+    min_edge: float = 8.0,
+    max_bets: int = 10,
+    background_tasks: Optional[BackgroundTasks] = None
+):
+    """Core logic — reused by GET and POST"""
+    # Resolve target date
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+            date_str = date
+        except:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    else:
+        offset = days_offset or 0
+        target_date = (datetime.now() + timedelta(days=offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        date_str = target_date.strftime("%Y-%m-%d")
+
+    nba_date_str = target_date.strftime("%Y%m%d")
+
+    # Try cache
+    cached = load_cached_best_bets(date_str)
+    if cached is not None:
+        cached_data = {
+            "date": date_str,
+            "total_opportunities": len(cached),
+            "best_bets": cached[:max_bets],
+            "min_edge_filter": min_edge,
+            "source": "cache",
+            "updated": "cached"
+        }
+        # Try to add timestamp if file exists
+        try:
+            with open(f"data/bestbets_{date_str}.json") as f:
+                ts = json.load(f).get('timestamp', '')
+                mins_ago = int((datetime.now() - datetime.fromisoformat(ts)).seconds / 60)
+                cached_data["updated"] = f"{mins_ago} min ago"
+        except:
+            pass
+        return cached_data
+
+    # Fetch games for the date
+    try:
+        from utils import fetch_games_with_odds_for_date
+        games = fetch_games_with_odds_for_date(nba_date_str)
+    except ImportError:
+        # Fallback if function doesn't exist yet
+        from utils import fetch_todays_games_with_odds
+        all_games = fetch_todays_games_with_odds()
+        games = [g for g in all_games if g.get('date', '').startswith(date_str.replace('-', ''))]
+
+    if not games:
+        return {
+            "date": date_str,
+            "total_opportunities": 0,
+            "best_bets": [],
+            "note": "No games or odds available for this date"
+        }
+
     all_bets = []
-    
+    abbr_fix = {"NY": "NYK", "NO": "NOP", "GS": "GSW", "SA": "SAS", "PHX": "PHX"}
+
     for game in games:
-        # Fix abbreviations
-        home_abbr = game['home_team']
-        away_abbr = game['away_team']
-        
-        if home_abbr == "NY": home_abbr = "NYK"
-        if away_abbr == "NY": away_abbr = "NYK"
-        if home_abbr == "NO": home_abbr = "NOP"
-        if away_abbr == "NO": away_abbr = "NOP"
-        if home_abbr == "GS": home_abbr = "GSW"
-        if away_abbr == "GS": away_abbr = "GSW"
-        if home_abbr == "SA": home_abbr = "SAS"
-        if away_abbr == "SA": away_abbr = "SAS"
-        
-        game_pred = predict_game(GamePredictionRequest(
-            home_team=home_abbr,
-            away_team=away_abbr,
-            spread_line=game.get('spread'),
-            total_line=game.get('total')
-        ))
-        
-        for rec in game_pred.get('recommendations', []):
-            if rec['edge_percent'] >= req.min_edge:
-                all_bets.append({
-                    "game": game_pred['game'],
-                    "game_time": game['game_time'],
-                    **rec
-                })
-    
+        home = abbr_fix.get(game.get('home_team'), game.get('home_team'))
+        away = abbr_fix.get(game.get('away_team'), game.get('away_team'))
+
+        try:
+            pred = predict_game(GamePredictionRequest(
+                home_team=home,
+                away_team=away,
+                spread_line=game.get('spread'),
+                total_line=game.get('total'),
+                game_time=game.get('game_time')
+            ))
+
+            for rec in pred.get('recommendations', []):
+                if rec['edge_percent'] >= min_edge:
+                    all_bets.append({
+                        "game": pred['game'],
+                        "game_time": game.get('game_time', 'TBD'),
+                        "bet_type": rec['bet_type'],
+                        "pick": rec['pick'],
+                        "line": rec.get('line'),
+                        "projection": rec.get('projection'),
+                        "edge_percent": round(rec['edge_percent'], 1),
+                    })
+        except Exception as e:
+            print(f"Error on {away} @ {home}: {e}")
+            continue
+
     all_bets.sort(key=lambda x: x['edge_percent'], reverse=True)
-    
+    top_bets = all_bets[:max_bets]
+
+    # Save cache in background
+    if background_tasks:
+        background_tasks.add_task(save_best_bets_cache, top_bets, date_str)
+
     return {
-        "date": req.date or datetime.now().strftime("%Y-%m-%d"),
+        "date": date_str,
         "total_opportunities": len(all_bets),
-        "best_bets": all_bets[:req.max_bets],
-        "min_edge_filter": req.min_edge
+        "best_bets": top_bets,
+        "min_edge_filter": min_edge,
+        "source": "live",
+        "updated": "just now"
     }
+
+
+# === FINAL ENDPOINTS (No conflicts!) ===
+@app.get("/best-bets")
+def best_bets_get(
+    date: Optional[str] = None,
+    days_offset: Optional[int] = None,
+    min_edge: float = 8.0,
+    max_bets: int = 10,
+    background_tasks: BackgroundTasks = None
+):
+    return get_best_bets_common(date, days_offset, min_edge, max_bets, background_tasks)
+
+
+@app.post("/best-bets")
+def best_bets_post(
+    req: BestBetsRequest,
+    background_tasks: BackgroundTasks = None
+):
+    return get_best_bets_common(
+        date=req.date,
+        days_offset=None,
+        min_edge=req.min_edge,
+        max_bets=req.max_bets,
+        background_tasks=background_tasks
+    )
 
 # === UTILITY ENDPOINTS ===
 @app.get("/")

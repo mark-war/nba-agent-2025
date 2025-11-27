@@ -615,6 +615,12 @@ def enrich_with_odds(games: List[Dict]) -> List[Dict]:
         print(f"Odds API error: {e} → falling back to mock odds")
         return _apply_mock_odds(games)
 
+def fetch_games_with_odds_for_date(date_str: str):
+    """Fetch games + odds for any date (YYYYMMDD format)"""
+    # Use your existing logic but make date dynamic
+    # This replaces fetch_todays_games_with_odds()
+    # Example using The Odds API, ESPN, or your scraper
+    pass  # implement based on your current fetch_todays_games_with_odds
 
 def _apply_mock_odds(games):
     import random

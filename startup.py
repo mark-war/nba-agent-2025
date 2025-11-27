@@ -47,8 +47,8 @@ for filename, file_id in GDRIVE_IDS.items():
         download_file(filename, file_id, DATA_DIR)
 
 # Now load everything — works locally AND on Render
-player_model = joblib.load(MODELS_DIR / "player_model_2025.pkl", mmap_mode='r')
-team_model   = joblib.load(MODELS_DIR / "team_model_2025.pkl", mmap_mode='r')
+player_model = joblib.load(MODELS_DIR / "player_model_2025.pkl")
+team_model   = joblib.load(MODELS_DIR / "team_model_2025.pkl")
 df_players   = pd.read_csv(DATA_DIR / "2025_26_players.csv")
 df_teams     = pd.read_csv(DATA_DIR / "2025_26_teams.csv")
 injuries_df  = pd.read_csv(DATA_DIR / "injuries.csv")
