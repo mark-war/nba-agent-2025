@@ -1,18 +1,27 @@
-# Python
+# ─────────────────────────────────────────────────────────────
+# Python & Backend
+# ─────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyo
 *.pyd
-.Python
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.manifest
+*.spec
+
+# Virtual environments
 env/
 venv/
 .venv/
 ENV/
 env.bak/
 venv.bak/
-pip-log.txt
-pip-delete-this-directory.txt
+
+# Testing & coverage
 .tox/
 .coverage
 .coverage.*
@@ -20,49 +29,95 @@ pip-delete-this-directory.txt
 nosetests.xml
 coverage.xml
 *.cover
-*.log
-*.manifest
-*.spec
+htmlcov/
 
-# Virtual Environment
-venv/
-ENV/
-env/
-.venv/
+# Jupyter
+.ipynb_checkpoints/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# PyCharm / IDE
+# IDEs & Editors
 .idea/
+.vscode/
+*.swp
+*~
 *.iml
 *.iws
 *.ipr
-*.swp
-*~
 
-# VS Code
-.vscode/
-
-# Mac
+# OS junk
 .DS_Store
-
-# Windows
 Thumbs.db
 Desktop.ini
 
-# Your project specific
-data/*.csv
-data/*.pkl
-models/*.pkl
-*.pyc
-__pycache__/
-*.log
+# ─────────────────────────────────────────────────────────────
+# Data — NEVER commit raw or processed data
+# ─────────────────────────────────────────────────────────────
+data/
+!data/README.md                  # ← allow a README if you want to explain the folder
+*.csv
+*.json
+*.parquet
+*.feather
+*.xlsx
+*.xls
+*.zip
+*.tar.gz
+*.gzip
+*.7z
 
-# Render / Deployment
-.render/
-render.yaml
+# ─────────────────────────────────────────────────────────────
+# Trained Models — NEVER commit model binaries
+# ─────────────────────────────────────────────────────────────
+models/
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.keras
+*.pt
+*.pth
+*.tflite
+*.onnx
+*.mlmodel
+*.bin
 
-# Secrets
+# ─────────────────────────────────────────────────────────────
+# Secrets & Environment
+# ─────────────────────────────────────────────────────────────
 .env
 .env.local
+.env.*.local
+*.env.backup
+
+# ─────────────────────────────────────────────────────────────
+# Node.js / Next.js / Frontend
+# ─────────────────────────────────────────────────────────────
+# Next.js
+.next/
+out/
+build/
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Turbopack / Next.js cache
+.vercel/
+.turbo/
+
+# ─────────────────────────────────────────────────────────────
+# Deployment & CI
+# ─────────────────────────────────────────────────────────────
+.render/
+render.yaml
+dist/
+tmp/
+temp/
+
+# ─────────────────────────────────────────────────────────────
+# Optional: Allow tiny static lookup files (uncomment if needed)
+# ─────────────────────────────────────────────────────────────
+# !data/static/teams.json
+# !data/static/venues.json

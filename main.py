@@ -31,28 +31,36 @@ team_model = joblib.load("models/team_model_2025.pkl")
 df_players = pd.read_csv("data/2025_26_players.csv")
 df_teams = pd.read_csv("data/2025_26_teams.csv")
 
-# Cache for today's games
-CACHE_FILE = Path("data/todays_games_cache.json")
+# Cache settings
 CACHE_DURATION = timedelta(hours=1)
 
-def load_cached_games():
-    """Load cached games if fresh"""
-    if CACHE_FILE.exists():
-        with open(CACHE_FILE) as f:
-            cache = json.load(f)
-            cache_time = datetime.fromisoformat(cache['timestamp'])
-            if datetime.now() - cache_time < CACHE_DURATION:
-                return cache['games']
+def load_cached_games(date_str: str):
+    """Load cached games for specific date if fresh"""
+    cache_file = Path(f"data/games_{date_str}.json")
+    if cache_file.exists():
+        try:
+            with open(cache_file) as f:
+                cache = json.load(f)
+                cache_time = datetime.fromisoformat(cache['timestamp'])
+                if datetime.now() - cache_time < CACHE_DURATION:
+                    return cache['games']
+        except Exception as e:
+            print(f"Cache load error: {e}")
     return None
 
-def save_games_cache(games):
-    """Save games to cache"""
+def save_games_cache(games: List[Dict], date_str: str):
+    """Save games to cache for specific date"""
+    cache_file = Path(f"data/games_{date_str}.json")
     cache = {
         'timestamp': datetime.now().isoformat(),
-        'games': games
+        'games': games,
+        'date': date_str
     }
-    with open(CACHE_FILE, 'w') as f:
-        json.dump(cache, f)
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f)
+    except Exception as e:
+        print(f"Cache save error: {e}")
 
 # Injury status
 try:
@@ -223,10 +231,29 @@ TEAM_ID_TO_ABBR = {
     1610612741: "CHI", 1610612739: "CLE", 1610612742: "DAL", 1610612743: "DEN",
     1610612765: "DET", 1610612744: "GSW", 1610612745: "HOU", 1610612754: "IND",
     1610612746: "LAC", 1610612747: "LAL", 1610612763: "MEM", 1610612748: "MIA",
-    1610612749: "MIL", 1610612750: "MIN", 1610612740: "NOP", 1610612752: "NYK", 1610612752: "NY",
+    1610612749: "MIL", 1610612750: "MIN", 1610612740: "NOP", 1610612752: "NYK",
     1610612760: "OKC", 1610612753: "ORL", 1610612755: "PHI", 1610612756: "PHX",
     1610612757: "POR", 1610612758: "SAC", 1610612759: "SAS", 1610612761: "TOR",
     1610612762: "UTA", 1610612764: "WAS"
+}
+
+ODDS_API_TEAM_NAMES = {
+    "ATL": "Atlanta Hawks", "BOS": "Boston Celtics", "BKN": "Brooklyn Nets",
+    "CHA": "Charlotte Hornets", "CHI": "Chicago Bulls", "CLE": "Cleveland Cavaliers",
+    "DAL": "Dallas Mavericks", "DEN": "Denver Nuggets", "DET": "Detroit Pistons",
+    "GSW": "Golden State Warriors", "GS": "Golden State Warriors",
+    "HOU": "Houston Rockets", "IND": "Indiana Pacers",
+    "LAC": "LA Clippers", "LAL": "Los Angeles Lakers",
+    "MEM": "Memphis Grizzlies", "MIA": "Miami Heat",
+    "MIL": "Milwaukee Bucks", "MIN": "Minnesota Timberwolves",
+    "NOP": "New Orleans Pelicans", "NO": "New Orleans Pelicans",
+    "NYK": "New York Knicks", "NY": "New York Knicks",
+    "OKC": "Oklahoma City Thunder", "ORL": "Orlando Magic",
+    "PHI": "Philadelphia 76ers", "PHX": "Phoenix Suns",
+    "POR": "Portland Trail Blazers", "SAC": "Sacramento Kings",
+    "SAS": "San Antonio Spurs", "SA": "San Antonio Spurs",
+    "TOR": "Toronto Raptors", "UTA": "Utah Jazz",
+    "WAS": "Washington Wizards",
 }
 
 @app.post("/predict-game")
@@ -279,6 +306,46 @@ def predict_game(req: GamePredictionRequest):
     
     # Betting recommendations
     recommendations = []
+
+    # First to 10 Points
+    def predict_first_to_10(home_abbr: str, away_abbr: str, home_ortg: float, away_ortg: float, avg_pace: float) -> dict:
+        home_off_efficiency = home_ortg / 114.0
+        away_off_efficiency = away_ortg / 114.0
+        
+        burst_factor = {
+            "BOS": 1.15, "OKC": 1.18, "CLE": 1.12, "DEN": 1.10, "MIN": 1.08,
+            "NYK": 1.07, "LAL": 1.14, "GSW": 1.16, "PHX": 1.13, "MIL": 1.11,
+            "IND": 1.20, "SAC": 1.09, "MIA": 1.05, "ORL": 0.92, "PHI": 0.95,
+            "NOP": 1.06, "DAL": 1.08, "HOU": 1.04, "ATL": 1.10,
+            "CHA": 0.88, "DET": 0.90, "WAS": 0.87, "POR": 0.91, "SAS": 0.93,
+            "TOR": 0.94, "BKN": 0.92, "UTA": 0.95, "CHI": 0.96, "MEM": 0.97,
+            "LAC": 0.98
+        }
+        
+        home_burst = burst_factor.get(home_abbr, 1.0)
+        away_burst = burst_factor.get(away_abbr, 1.0)
+        
+        home_score = home_off_efficiency * home_burst * avg_pace
+        away_score = away_off_efficiency * away_burst * avg_pace
+        
+        total = home_score + away_score
+        home_prob = home_score / total if total > 0 else 0.5
+        away_prob = 1 - home_prob
+        
+        favorite = home_abbr if home_prob > away_prob else away_abbr
+        edge = abs(home_prob - 0.5) * 200
+        
+        return {
+            "bet_type": "FIRST_TO_10",
+            "pick": f"{favorite} -120" if edge > 8 else f"{favorite} -135",
+            "probability": round(max(home_prob, away_prob) * 100, 1),
+            "edge_percent": round(edge, 1),
+            "confidence": "HIGH" if edge > 12 else "MEDIUM" if edge > 6 else "LOW"
+        }
+
+    first_to_10 = predict_first_to_10(home_input, away_input, home_ortg, away_ortg, avg_pace)
+    if first_to_10["edge_percent"] >= 6:
+        recommendations.append(first_to_10)
     
     if req.total_line:
         total_edge = abs(total_proj - req.total_line) / req.total_line * 100
@@ -301,59 +368,6 @@ def predict_game(req: GamePredictionRequest):
             "edge_percent": round(spread_edge, 1)
         })
 
-    # Add this inside your predict_game() function, right after you calculate spread_proj and total_proj
-
-    # === FIRST TO 10 POINTS PREDICTION ===
-    def predict_first_to_10(home_abbr: str, away_abbr: str, home_ortg: float, away_ortg: float, avg_pace: float) -> dict:
-        """
-        Predict which team scores 10 points first.
-        Based on offensive rating, pace, and early-game burst tendencies.
-        """
-        # Base probability from offensive efficiency
-        home_off_efficiency = home_ortg / 114.0  # normalized to league avg
-        away_off_efficiency = away_ortg / 114.0
-        
-        # Early-game burst factors (2025-26 real tendencies)
-        burst_factor = {
-            "BOS": 1.15, "OKC": 1.18, "CLE": 1.12, "DEN": 1.10, "MIN": 1.08,
-            "NYK": 1.07, "LAL": 1.14, "GSW": 1.16, "PHX": 1.13, "MIL": 1.11,
-            "IND": 1.20, "SAC": 1.09, "MIA": 1.05, "ORL": 0.92, "PHI": 0.95,
-            "NOP": 1.06, "DAL": 1.08, "HOU": 1.04, "ATL": 1.10,
-            # Lower burst teams
-            "CHA": 0.88, "DET": 0.90, "WAS": 0.87, "POR": 0.91, "SAS": 0.93,
-            "TOR": 0.94, "BKN": 0.92, "UTA": 0.95, "CHI": 0.96, "MEM": 0.97,
-            "LAC": 0.98
-        }
-        
-        home_burst = burst_factor.get(home_abbr, 1.0)
-        away_burst = burst_factor.get(away_abbr, 1.0)
-        
-        # Combined score
-        home_score = home_off_efficiency * home_burst * avg_pace
-        away_score = away_off_efficiency * away_burst * avg_pace
-        
-        total = home_score + away_score
-        home_prob = home_score / total if total > 0 else 0.5
-        away_prob = 1 - home_prob
-        
-        favorite = home_abbr if home_prob > away_prob else away_abbr
-        edge = abs(home_prob - 0.5) * 200  # convert to % edge vs fair 50%
-        
-        return {
-            "bet_type": "FIRST_TO_10",
-            "pick": f"{favorite} -120" if edge > 8 else f"{favorite} -135",
-            "probability": round(max(home_prob, away_prob) * 100, 1),
-            "edge_percent": round(edge, 1),
-            "confidence": "HIGH" if edge > 12 else "MEDIUM" if edge > 6 else "LOW"
-        }
-
-    # Then call it:
-    first_to_10 = predict_first_to_10(home_input, away_input, home_ortg, away_ortg, avg_pace)
-
-    # Add to recommendations if strong edge
-    if first_to_10["edge_percent"] >= 6:  # only show if decent value
-        recommendations.append(first_to_10)
-    
     return {
         "game": f"{away_input} @ {home_input}",
         "game_time": req.game_time or "TBD",
@@ -370,62 +384,50 @@ def predict_game(req: GamePredictionRequest):
         "first_to_10": first_to_10
     }
 
-# === TODAY'S GAMES ===
+# === TODAY'S GAMES WITH DATE SUPPORT ===
 @app.get("/todays-games")
-def get_todays_games(background_tasks: BackgroundTasks):
-    """Fetch today's games with odds (cached for 1 hour)"""
-    # Check cache first
-    cached = load_cached_games()
-    if cached:
-        return {"games": cached, "source": "cache", "updated": "< 1 hour ago"}
+def get_todays_games(
+    background_tasks: BackgroundTasks,
+    days_offset: int = 0
+):
+    """
+    Fetch games with odds (cached for 1 hour)
     
-    # Fetch fresh data in background
-    from utils import fetch_todays_games_with_odds
+    Args:
+        days_offset: Days from today (0=today, 1=tomorrow, -1=yesterday)
+    """
+    # Calculate target date
+    target_date = datetime.now() + timedelta(days=days_offset)
+    date_str = target_date.strftime("%Y-%m-%d")
+    nba_date_str = target_date.strftime("%Y%m%d")
+    
+    # Check cache first
+    cached = load_cached_games(date_str)
+    if cached:
+        mins_ago = int((datetime.now() - datetime.fromisoformat(
+            json.loads(Path(f"data/games_{date_str}.json").read_text())['timestamp']
+        )).seconds / 60)
+        return {
+            "games": cached,
+            "source": "cache",
+            "updated": f"{mins_ago} min ago" if mins_ago > 0 else "just now",
+            "date": date_str
+        }
+    
+    # Fetch fresh data
+    from utils import fetch_games_for_date
     
     try:
-        games = fetch_todays_games_with_odds()
-        background_tasks.add_task(save_games_cache, games)
-        return {"games": games, "source": "live", "updated": "just now"}
+        games = fetch_games_for_date(nba_date_str)
+        background_tasks.add_task(save_games_cache, games, date_str)
+        return {
+            "games": games,
+            "source": "live",
+            "updated": "just now",
+            "date": date_str
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch games: {str(e)}")
-
-ODDS_API_TEAM_NAMES = {
-    "ATL": "Atlanta Hawks",
-    "BOS": "Boston Celtics",
-    "BKN": "Brooklyn Nets",
-    "CHA": "Charlotte Hornets",
-    "CHI": "Chicago Bulls",
-    "CLE": "Cleveland Cavaliers",
-    "DAL": "Dallas Mavericks",
-    "DEN": "Denver Nuggets",
-    "DET": "Detroit Pistons",
-    "GSW": "Golden State Warriors",
-    "GS": "Golden State Warriors",
-    "HOU": "Houston Rockets",
-    "IND": "Indiana Pacers",
-    "LAC": "LA Clippers",
-    "LAL": "Los Angeles Lakers",
-    "MEM": "Memphis Grizzlies",
-    "MIA": "Miami Heat",
-    "MIL": "Milwaukee Bucks",
-    "MIN": "Minnesota Timberwolves",
-    "NOP": "New Orleans Pelicans",
-    "NO": "New Orleans Pelicans",
-    "NYK": "New York Knicks",
-    "NY": "New York Knicks",
-    "OKC": "Oklahoma City Thunder",
-    "ORL": "Orlando Magic",
-    "PHI": "Philadelphia 76ers",
-    "PHX": "Phoenix Suns",
-    "POR": "Portland Trail Blazers",
-    "SAC": "Sacramento Kings",
-    "SAS": "San Antonio Spurs",
-    "SA": "San Antonio Spurs",
-    "TOR": "Toronto Raptors",
-    "UTA": "Utah Jazz",
-    "WAS": "Washington Wizards",
-}
-
 
 # === BEST BETS ===
 @app.post("/best-bets")
@@ -436,28 +438,20 @@ def get_best_bets(req: BestBetsRequest):
     games = fetch_todays_games_with_odds()
     all_bets = []
     
-    # Game bet
     for game in games:
-        # === FINAL CLEAN ABBREVIATION FIX (covers 100% of real-world cases) ===
+        # Fix abbreviations
         home_abbr = game['home_team']
         away_abbr = game['away_team']
         
-        # Fix the two known bad abbreviations
-        if home_abbr == "NY":   home_abbr = "NYK"
-        if away_abbr == "NY":   away_abbr = "NYK"
-        if home_abbr == "NO":   home_abbr = "NOP"
-        if away_abbr == "NO":   away_abbr = "NOP"
-        if home_abbr == "GS":   home_abbr = "GSW"
-        if away_abbr == "GS":   away_abbr = "GSW"
-        if home_abbr == "SA":   home_abbr = "SAS"
-        if away_abbr == "SA":   away_abbr = "SAS"
+        if home_abbr == "NY": home_abbr = "NYK"
+        if away_abbr == "NY": away_abbr = "NYK"
+        if home_abbr == "NO": home_abbr = "NOP"
+        if away_abbr == "NO": away_abbr = "NOP"
+        if home_abbr == "GS": home_abbr = "GSW"
+        if away_abbr == "GS": away_abbr = "GSW"
+        if home_abbr == "SA": home_abbr = "SAS"
+        if away_abbr == "SA": away_abbr = "SAS"
         
-        # Optional: safety net for any future weirdness
-        # (You can delete this later — it's just paranoia)
-        if home_abbr not in TEAM_ID_TO_ABBR.values():
-            home_abbr = next((k for k, v in ODDS_API_TEAM_NAMES.items() if home_abbr in v), home_abbr)
-        if away_abbr not in TEAM_ID_TO_ABBR.values():
-            away_abbr = next((k for k, v in ODDS_API_TEAM_NAMES.items() if away_abbr in v), away_abbr)
         game_pred = predict_game(GamePredictionRequest(
             home_team=home_abbr,
             away_team=away_abbr,
@@ -473,7 +467,6 @@ def get_best_bets(req: BestBetsRequest):
                     **rec
                 })
     
-    # Sort by edge
     all_bets.sort(key=lambda x: x['edge_percent'], reverse=True)
     
     return {
@@ -494,12 +487,13 @@ def home():
             "Game predictions with odds comparison",
             "Today's games with live odds",
             "Best bets analyzer",
-            "Injury status tracking"
+            "Injury status tracking",
+            "Date navigation (past/future games)"
         ],
         "endpoints": {
             "player_props": "/predict",
             "game_prediction": "/predict-game",
-            "todays_games": "/todays-games",
+            "todays_games": "/todays-games?days_offset=0",
             "best_bets": "/best-bets",
             "injuries": "/injuries",
             "players": "/players"

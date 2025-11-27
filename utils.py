@@ -306,6 +306,31 @@ def fetch_todays_games_with_odds() -> List[Dict]:
     
     return games
 
+def fetch_games_for_date(date_str: str) -> List[Dict]:
+    """
+    Fetch NBA games for a specific date (supports past, present, future)
+    Args:
+        date_str: Date string in YYYYMMDD format (e.g., "20251128")
+    Returns: List of games with teams, times, and odds
+    """
+    print(f"Fetching NBA games for {date_str}...")
+    
+    # Fetch schedule from ESPN (works for any date)
+    games = fetch_nba_schedule(date_str)
+    
+    # Enhance with live odds only if it's today or future
+    try:
+        # Only fetch odds for today and future games
+        today_str = datetime.now().strftime("%Y%m%d")
+        if date_str >= today_str:
+            games = enrich_with_odds(games)
+        else:
+            print(f"   Skipping odds for past date {date_str}")
+    except Exception as e:
+        print(f"⚠ Odds fetch failed: {e} — using default lines")
+    
+    return games
+
 def fetch_nba_scheduleX(date_str: str) -> List[Dict]:
     """Fetch NBA schedule from NBA Stats API"""
     url = "https://stats.nba.com/stats/scoreboardv2"
