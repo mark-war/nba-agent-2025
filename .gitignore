@@ -67,8 +67,7 @@ Desktop.ini
 # ─────────────────────────────────────────────────────────────
 # Trained Models — NEVER commit model binaries
 # ─────────────────────────────────────────────────────────────
-models/
-*.pkl
+
 *.pickle
 *.joblib
 *.h5
