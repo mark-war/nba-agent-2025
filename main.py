@@ -85,68 +85,62 @@ def save_games_cache(games, date_str):
 # ==================== ML PLAYER PROP PREDICTION ====================
 @app.post("/predict")
 def predict_player_ml(req: PlayerRequest):
-    search = req.player_name.strip().lower()
-    matches = df_players[df_players['PLAYER_NAME'].str.lower().str.contains(search, na=False)]
-    
-    if matches.empty:
-        return {"error": "Player not found", "player": req.player_name}
+    try:
+        search = req.player_name.strip().lower()
+        matches = df_players[df_players['PLAYER_NAME'].str.lower().str.contains(search, na=False)]
+        
+        if matches.empty:
+            return {"error": "Player not found", "player": req.player_name}
 
-    p = matches.iloc[0]
-    player_name = p['PLAYER_NAME']
-    injury = get_injury_status(player_name)
+        p = matches.iloc[0]
+        player_name = p['PLAYER_NAME']
+        injury = get_injury_status(player_name)
 
-    if injury['status'] in ['OUT', 'Doubtful']:
+        if injury['status'] in ['OUT', 'Doubtful']:
+            return {
+                "player": player_name,
+                "status": injury['status'],
+                "recommendation": "AVOID ALL PROPS",
+                "reason": "Injured"
+            }
+
+        # Opponent defense
+        opp_row = df_teams[df_teams['TEAM_ABBREVIATION'] == req.opponent_abbr.upper()]
+        opp_def = float(opp_row['DEF_RATING'].iloc[0]) if not opp_row.empty else 114.0
+
+        # 9 features — safe defaults
+        features = np.array([[
+            float(p.get('MP', 30.0)),
+            float(p.get('FG_PCT', 0.45)),
+            float(p.get('FG3_PCT', 0.35)),
+            2.0,  # rest days
+            opp_def,
+            1 if p.get('TEAM_ABBREVIATION', '') != req.opponent_abbr.upper() else 0,
+            0,    # not B2B
+            float(p.get('AGE', 27)),
+            float(p.get('PACE', 100.0))
+        ]], dtype=np.float32)
+
+        # THIS HANDLES BOTH SCALAR AND ARRAY OUTPUT
+        pred = player_model.predict(features)
+        pts_projection = float(pred[0]) if hasattr(pred, '__len__') and len(pred) > 0 else float(pred)
+
+        if injury['status'] == "Questionable":
+            pts_projection *= 0.9
+
         return {
             "player": player_name,
+            "team": p.get('TEAM_ABBREVIATION', 'UNK'),
+            "vs": req.opponent_abbr.upper(),
             "status": injury['status'],
-            "recommendation": "AVOID ALL PROPS",
-            "reason": "Player injured or unlikely to play"
+            "model": "ML v3 — LIVE",
+            "projected_pts": round(pts_projection, 1),
+            "message": "Real ML-powered points prediction"
         }
 
-    # Get opponent defense rating
-    opp_row = df_teams[df_teams['TEAM_ABBREVIATION'] == req.opponent_abbr.upper()]
-    opp_def = opp_row['DEF_RATING'].iloc[0] if not opp_row.empty else 114.0
-
-    # === THIS IS THE CORRECT, CLOSED 9-FEATURE ARRAY ===
-    features = np.array([[
-        float(p.get('MP', 30.0)),           # Minutes Played
-        float(p.get('FG_PCT', 0.45)),        # Field Goal %
-        float(p.get('FG3_PCT', 0.35)),       # 3-Point %
-        2.0,                                 # Rest days (assume 2)
-        float(opp_def),                      # Opponent Defensive Rating
-        1 if p.get('TEAM_ABBREVIATION', '') != req.opponent_abbr.upper() else 0,  # Away = 1, Home = 0
-        0,                                   # Back-to-back? 0 = no
-        float(p.get('AGE', 27)),             # Player age
-        float(p.get('PACE', 100.0))          # Team pace
-    ]], dtype=np.float32)
-    # === END OF ARRAY — PERFECTLY CLOSED ===
-
-    # Predict with your real ML model
-    raw_preds = player_model.predict(features)[0]
-
-    projected = {
-        "PTS": round(float(raw_preds[0]), 1),
-        "REB": round(float(raw_preds[1]), 1),
-        "AST": round(float(raw_preds[2]), 1),
-        "STL": round(float(raw_preds[3]), 1),
-        "BLK": round(float(raw_preds[4]), 1),
-        "FG3M": round(float(raw_preds[5]), 1),
-    }
-
-    # Injury adjustment
-    if injury['status'] == "Questionable":
-        projected = {k: round(v * 0.9, 1) for k, v in projected.items()}
-
-    return {
-        "player": player_name,
-        "team": p.get('TEAM_ABBREVIATION', 'UNK'),
-        "vs": req.opponent_abbr.upper(),
-        "status": injury['status'],
-        "model": "ML v3 — LIVE",
-        "projected": projected,
-        "injury_status": injury['status'],
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
-    }
+    except Exception as e:
+        # This prevents 500 → CORS headers will still be sent
+        raise HTTPException(status_code=500, detail=f"ML Error: {str(e)}")
 
 # ==================== ML GAME PREDICTION ====================
 @app.post("/predict-game")
