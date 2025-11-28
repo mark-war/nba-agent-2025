@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 
-from startup import player_model, team_model, df_players, df_teams, injuries_df
+from startup import df_players, df_teams, injuries_df
 
 app = FastAPI(
     title="NBA Betting Agent Pro 2025-26",

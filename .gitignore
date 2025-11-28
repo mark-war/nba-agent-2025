@@ -51,9 +51,9 @@ Desktop.ini
 # ─────────────────────────────────────────────────────────────
 # Data — NEVER commit raw or processed data
 # ─────────────────────────────────────────────────────────────
-data/
+
 !data/README.md                  # ← allow a README if you want to explain the folder
-*.csv
+
 *.json
 *.parquet
 *.feather
