@@ -615,12 +615,37 @@ def enrich_with_odds(games: List[Dict]) -> List[Dict]:
         print(f"Odds API error: {e} → falling back to mock odds")
         return _apply_mock_odds(games)
 
-def fetch_games_with_odds_for_date(date_str: str):
-    """Fetch games + odds for any date (YYYYMMDD format)"""
-    # Use your existing logic but make date dynamic
-    # This replaces fetch_todays_games_with_odds()
-    # Example using The Odds API, ESPN, or your scraper
-    pass  # implement based on your current fetch_todays_games_with_odds
+# Replace the empty function in your utils.py with this:
+
+def fetch_games_with_odds_for_date(date_str: str) -> List[Dict]:
+    """
+    Fetch games + odds for any date (YYYYMMDD format)
+    This is the same as fetch_games_for_date - just with a clearer name
+    """
+    print(f"Fetching games with odds for {date_str}...")
+    
+    # Fetch schedule from ESPN (works for any date)
+    games = fetch_nba_schedule(date_str)
+    
+    if not games:
+        print(f"   No games found for {date_str}")
+        return []
+    
+    # Enhance with live odds only if it's today or future
+    try:
+        today_str = datetime.now().strftime("%Y%m%d")
+        if date_str >= today_str:
+            print(f"   Fetching live odds for {date_str}...")
+            games = enrich_with_odds(games)
+        else:
+            print(f"   Skipping odds for past date {date_str} - adding mock odds")
+            # For past dates, add mock odds so predictions still work
+            games = _apply_mock_odds(games)
+    except Exception as e:
+        print(f"⚠ Odds fetch failed: {e} — using mock odds")
+        games = _apply_mock_odds(games)
+    
+    return games
 
 def _apply_mock_odds(games):
     import random

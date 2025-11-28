@@ -468,56 +468,66 @@ def get_best_bets_common(
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     else:
         offset = days_offset or 0
-        target_date = (datetime.now() + timedelta(days=offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        target_date = datetime.now() + timedelta(days=offset)
         date_str = target_date.strftime("%Y-%m-%d")
 
     nba_date_str = target_date.strftime("%Y%m%d")
 
+    print(f"\n=== BEST BETS REQUEST ===")
+    print(f"Date: {date_str} (NBA format: {nba_date_str})")
+    print(f"Min Edge: {min_edge}%")
+
     # Try cache
     cached = load_cached_best_bets(date_str)
     if cached is not None:
-        cached_data = {
+        print(f"✓ Returning cached best bets ({len(cached)} bets)")
+        try:
+            with open(f"data/bestbets_{date_str}.json") as f:
+                ts = json.load(f).get('timestamp', '')
+                mins_ago = int((datetime.now() - datetime.fromisoformat(ts)).seconds / 60)
+                updated_str = f"{mins_ago} min ago" if mins_ago > 0 else "just now"
+        except:
+            updated_str = "cached"
+        
+        return {
             "date": date_str,
             "total_opportunities": len(cached),
             "best_bets": cached[:max_bets],
             "min_edge_filter": min_edge,
             "source": "cache",
-            "updated": "cached"
+            "updated": updated_str
         }
-        # Try to add timestamp if file exists
-        try:
-            with open(f"data/bestbets_{date_str}.json") as f:
-                ts = json.load(f).get('timestamp', '')
-                mins_ago = int((datetime.now() - datetime.fromisoformat(ts)).seconds / 60)
-                cached_data["updated"] = f"{mins_ago} min ago"
-        except:
-            pass
-        return cached_data
 
     # Fetch games for the date
+    print(f"⚙ Fetching fresh games for {nba_date_str}...")
+    from utils import fetch_games_with_odds_for_date
+    
     try:
-        from utils import fetch_games_with_odds_for_date
         games = fetch_games_with_odds_for_date(nba_date_str)
-    except ImportError:
-        # Fallback if function doesn't exist yet
-        from utils import fetch_todays_games_with_odds
-        all_games = fetch_todays_games_with_odds()
-        games = [g for g in all_games if g.get('date', '').startswith(date_str.replace('-', ''))]
+    except Exception as e:
+        print(f"❌ Error fetching games: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch games: {str(e)}")
 
     if not games:
+        print(f"⚠ No games found for {date_str}")
         return {
             "date": date_str,
             "total_opportunities": 0,
             "best_bets": [],
-            "note": "No games or odds available for this date"
+            "min_edge_filter": min_edge,
+            "note": "No games scheduled for this date"
         }
 
+    print(f"✓ Found {len(games)} games, analyzing...")
+    
     all_bets = []
-    abbr_fix = {"NY": "NYK", "NO": "NOP", "GS": "GSW", "SA": "SAS", "PHX": "PHX"}
-
-    for game in games:
+    abbr_fix = {"NY": "NYK", "NO": "NOP", "GS": "GSW", "SA": "SAS"}
+    
+    for i, game in enumerate(games, 1):
         home = abbr_fix.get(game.get('home_team'), game.get('home_team'))
         away = abbr_fix.get(game.get('away_team'), game.get('away_team'))
+        
+        print(f"   [{i}/{len(games)}] {away} @ {home}", end=" ")
 
         try:
             pred = predict_game(GamePredictionRequest(
@@ -528,6 +538,7 @@ def get_best_bets_common(
                 game_time=game.get('game_time')
             ))
 
+            game_bets = 0
             for rec in pred.get('recommendations', []):
                 if rec['edge_percent'] >= min_edge:
                     all_bets.append({
@@ -539,16 +550,33 @@ def get_best_bets_common(
                         "projection": rec.get('projection'),
                         "edge_percent": round(rec['edge_percent'], 1),
                     })
+                    game_bets += 1
+            
+            print(f"→ {game_bets} bet(s) found" if game_bets > 0 else "→ no value")
+            
         except Exception as e:
-            print(f"Error on {away} @ {home}: {e}")
+            print(f"→ ERROR: {e}")
             continue
 
+    print(f"\n✓ Analysis complete: {len(all_bets)} total opportunities")
+    
+    if len(all_bets) == 0:
+        return {
+            "date": date_str,
+            "total_opportunities": 0,
+            "best_bets": [],
+            "min_edge_filter": min_edge,
+            "note": f"No bets found with {min_edge}% minimum edge"
+        }
+
+    # Sort by edge
     all_bets.sort(key=lambda x: x['edge_percent'], reverse=True)
     top_bets = all_bets[:max_bets]
 
     # Save cache in background
     if background_tasks:
         background_tasks.add_task(save_best_bets_cache, top_bets, date_str)
+        print(f"💾 Caching {len(top_bets)} best bets...")
 
     return {
         "date": date_str,
@@ -558,7 +586,6 @@ def get_best_bets_common(
         "source": "live",
         "updated": "just now"
     }
-
 
 # === FINAL ENDPOINTS (No conflicts!) ===
 @app.get("/best-bets")
@@ -644,3 +671,38 @@ def health_check():
             "injuries": len(INJURY_STATUS)
         }
     }
+
+# Add this endpoint to your main.py for debugging:
+
+@app.get("/debug/games")
+def debug_games(days_offset: int = 0):
+    """Debug endpoint to see what games are being fetched"""
+    from utils import fetch_games_with_odds_for_date
+    
+    target_date = datetime.now() + timedelta(days=days_offset)
+    date_str = target_date.strftime("%Y-%m-%d")
+    nba_date_str = target_date.strftime("%Y%m%d")
+    
+    print(f"\n=== DEBUG GAMES ===")
+    print(f"Date: {date_str}")
+    print(f"NBA Format: {nba_date_str}")
+    
+    try:
+        games = fetch_games_with_odds_for_date(nba_date_str)
+        
+        return {
+            "date": date_str,
+            "nba_date": nba_date_str,
+            "games_count": len(games),
+            "games": games,
+            "status": "success"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "date": date_str,
+            "nba_date": nba_date_str,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "status": "error"
+        }
