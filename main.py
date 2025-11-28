@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
@@ -449,8 +449,6 @@ def get_todays_games(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch games: {str(e)}")
-
-from fastapi import Depends
 
 # === BEST BETS - FULLY DATE-AWARE + CACHED + NO ERRORS ===
 def get_best_bets_common(
