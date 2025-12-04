@@ -685,15 +685,21 @@ async def build_parlay(legs: List[ParlayLeg]):
 
             if leg.bet_type == "moneyline":
                 # No line needed
-                winner = leg.home_team.upper() if game_pred["projected_spread"] > 0 else leg.away_team.upper()
-                prob = game_pred["win_prob_home"] / 100 if game_pred["projected_spread"] > 0 else (100 - game_pred["win_prob_home"]) / 100
+                win_prob_home = game_pred["win_prob_home"]  # ← Grab the real win prob
+                projected_spread = game_pred["projected_spread"]
+
+                winner = leg.home_team.upper() if projected_spread > 0 else leg.away_team.upper()
+                prob = win_prob_home / 100 if projected_spread > 0 else (100 - win_prob_home) / 100
                 prob = np.clip(prob, 0.15, 0.85)
                 leg_odds = round(max(1.0 / prob, 1.10), 2)
 
                 leg_detail = {
                     "type": "moneyline",
                     "bet": f"{winner} to win (incl. overtime)",
-                    "win_probability": round(prob * 100, 1),
+                    "home_team": leg.home_team.upper(),        # ← fixes "MIN" issue
+                    "away_team": leg.away_team.upper(),        # ← fixes "MIN" issue
+                    "win_prob_home": win_prob_home,            # ← fixes 50% issue
+                    "win_probability": round(prob * 100, 1),   # ← for display
                     "decimal_odds": leg_odds
                 }
 
