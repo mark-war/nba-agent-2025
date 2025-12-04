@@ -514,6 +514,116 @@ def best_bets(
         }
     }
 
+# ==================== BUILD PARLAY ====================
+class ParlayLeg(BaseModel):
+    # Player prop
+    player: Optional[str] = None
+    stat: Optional[str] = "points"          # points / rebounds / assists
+    line: float
+    over: Optional[bool] = True             # True = OVER, False = UNDER
+
+    # Game bet
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    bet_type: Optional[str] = None          # "spread" or "total"
+    total_over: Optional[bool] = None       # only used for totals
+
+@app.post("/build-parlay")
+async def build_parlay(legs: List[ParlayLeg]):
+    if not legs:
+        raise HTTPException(400, "No legs provided")
+
+    total_decimal = 1.0
+    details = []
+
+    for leg in legs:
+        leg_odds = 1.0
+        leg_detail = {}
+
+        # ——— PLAYER PROP ———
+        if leg.player:
+            req = PlayerRequest(player_name=leg.player, opponent_abbr="AVG")
+            try:
+                pred = predict_player_ml(req)
+            except:
+                raise HTTPException(404, f"Player not found: {leg.player}")
+
+            # Right now we only support points — easy to add reb/ast later
+            if leg.stat == "points":
+                projection = pred["projected_pts"]
+            elif leg.stat == "rebounds":
+                projection = pred.get("REB_PG", 5.0)
+            elif leg.stat == "assists":
+                projection = pred.get("AST_PG", 4.0)
+            else:
+                projection = pred["projected_pts"]  # fallback
+
+            edge = (projection - leg.line) if leg.over else (leg.line - projection)
+            prob = 0.5 + edge * 0.04
+            prob = np.clip(prob, 0.15, 0.85)
+            leg_odds = round(max(1.0 / prob, 1.05), 2)
+
+            leg_detail = {
+                "type": "player_prop",
+                "bet": f"{leg.player} {'OVER' if leg.over else 'UNDER'} {leg.line} {leg.stat}",
+                "projection": round(projection, 1),
+                "edge_pts": round(edge, 1),
+                "probability": round(prob * 100, 1),
+                "decimal_odds": leg_odds
+            }
+
+        # ——— GAME BET (spread or total) ———
+        elif leg.home_team and leg.away_team and leg.bet_type:
+            game_req = GamePredictionRequest(
+                home_team=leg.home_team.upper(),
+                away_team=leg.away_team.upper(),
+                spread_line=leg.line if leg.bet_type == "spread" else None,
+                total_line=leg.line if leg.bet_type == "total" else None
+            )
+            game_pred = predict_game_ml(game_req)
+
+            if leg.bet_type == "spread":
+                proj = game_pred["projected_spread"]
+                edge = abs(proj - leg.line)
+                # Correct logic: if we project bigger home win → bet home
+                if proj > leg.line:
+                    prob = 0.5 + edge * 0.05
+                else:
+                    prob = 0.5 - edge * 0.05
+                bet_side = leg.home_team.upper() if proj > leg.line else leg.away_team.upper()
+                bet_line = leg.line if proj > leg.line else -leg.line
+
+            else:  # total
+                proj = game_pred["projected_total"]
+                edge = abs(proj - leg.line)
+                prob = 0.5 + (proj - leg.line) * 0.06
+                bet_side = "OVER" if proj > leg.line else "UNDER"
+                bet_line = leg.line
+
+            prob = np.clip(prob, 0.20, 0.80)
+            leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+            leg_detail = {
+                "type": leg.bet_type,
+                "bet": f"{leg.away_team.upper()} @ {leg.home_team.upper()} {bet_side} {bet_line:+.1f}",
+                "projection": round(proj, 1),
+                "edge": round(edge, 1),
+                "probability": round(prob * 100, 1),
+                "decimal_odds": leg_odds
+            }
+
+        total_decimal *= leg_odds
+        details.append(leg_detail)
+
+    return {
+        "parlay_odds": round(total_decimal, 2),
+        "total_legs": len(legs),
+        "estimated_fair_odds": round(total_decimal, 2),
+        "possible_win_per_100php": round((total_decimal - 1) * 100, 2),
+        "legs": details,
+        "model_version": MODEL_VERSION
+    }
+
 # ==================== OTHER ENDPOINTS ====================
 @app.get("/todays-games")
 def get_todays_games(background_tasks: BackgroundTasks, days_offset: int = 0):
