@@ -519,7 +519,7 @@ class ParlayLeg(BaseModel):
     # Player prop
     player: Optional[str] = None
     stat: Optional[str] = "points"          # points / rebounds / assists
-    line: float
+    line: Optional[float] = None
     over: Optional[bool] = True             # True = OVER, False = UNDER
 
     # Game bet
@@ -636,38 +636,45 @@ async def build_parlay(legs: List[ParlayLeg]):
         leg_detail = {}
         leg_odds = 1.0
 
-        # ——— PLAYER PROP ———
+        # ——— PLAYER PROP (ALL STATS SUPPORTED) ———
         if leg.player:
-            req = PlayerRequest(player_name=leg.player, opponent_abbr="AVG")
-            try:
-                pred = predict_player_ml(req)
-            except:
-                raise HTTPException(404, f"Player not found: {leg.player}")
+            if leg.line is None:
+                raise HTTPException(400, f"Line required for player prop: {leg.player}")
 
-            if leg.stat == "points":
-                projection = pred["projected_pts"]
-            elif leg.stat == "rebounds":
-                projection = pred.get("REB_PG", 6.0)
-            elif leg.stat == "assists":
-                projection = pred.get("AST_PG", 5.0)
+            req = PlayerRequest(player_name=leg.player, opponent_abbr="AVG")
+            pred = predict_player_ml(req)
+
+            # Get base stats from model
+            base = {
+                "points": pred.get("projected_pts", 20.0),
+                "rebounds": pred.get("REB_PG", 6.0),
+                "assists": pred.get("AST_PG", 5.0),
+                "steals": pred.get("STL_PG", 0.8),
+                "blocks": pred.get("BLK_PG", 0.6),
+                "threes": pred.get("FG3M_PG", pred.get("FG3A_PG", 3.0) * 0.38),  # estimate
+            }
+
+            # Handle PRA
+            if leg.stat == "pra":
+                projection = base["points"] + base["rebounds"] + base["assists"]
+                stat_name = "PRA"
             else:
-                projection = pred["projected_pts"]
+                projection = base.get(leg.stat, base["points"])
+                stat_name = leg.stat.replace("threes", "3PM").upper()
 
             edge = (projection - leg.line) if leg.over else (leg.line - projection)
-            prob = 0.5 + edge * 0.04
-            prob = np.clip(prob, 0.15, 0.85)
+            prob = np.clip(0.5 + edge * 0.04, 0.15, 0.85)
             leg_odds = round(max(1.0 / prob, 1.05), 2)
 
             leg_detail = {
                 "type": "player_prop",
-                "bet": f"{leg.player} {'OVER' if leg.over else 'UNDER'} {leg.line} {leg.stat}",
+                "bet": f"{leg.player} {'OVER' if leg.over else 'UNDER'} {leg.line} {stat_name}",
                 "projection": round(projection, 1),
-                "edge_pts": round(edge, 1),
+                "edge": round(edge, 1),
                 "probability": round(prob * 100, 1),
                 "decimal_odds": leg_odds
             }
-
-        # ——— GAME BETS (spread / total / moneyline) ———
+        # ——— GAME BETS ———
         elif leg.home_team and leg.away_team and leg.bet_type:
             game_pred = predict_game_ml(GamePredictionRequest(
                 home_team=leg.home_team.upper(),
@@ -677,17 +684,9 @@ async def build_parlay(legs: List[ParlayLeg]):
             ))
 
             if leg.bet_type == "moneyline":
-                # Pure moneyline — no line needed
-                proj_spread = game_pred["projected_spread"]
-                win_prob_home = game_pred["win_prob_home"] / 100
-
-                if proj_spread > 0:
-                    winner = leg.home_team.upper()
-                    prob = win_prob_home
-                else:
-                    winner = leg.away_team.upper()
-                    prob = 1 - win_prob_home
-
+                # No line needed
+                winner = leg.home_team.upper() if game_pred["projected_spread"] > 0 else leg.away_team.upper()
+                prob = game_pred["win_prob_home"] / 100 if game_pred["projected_spread"] > 0 else (100 - game_pred["win_prob_home"]) / 100
                 prob = np.clip(prob, 0.15, 0.85)
                 leg_odds = round(max(1.0 / prob, 1.10), 2)
 
@@ -699,22 +698,18 @@ async def build_parlay(legs: List[ParlayLeg]):
                 }
 
             elif leg.bet_type == "spread":
+                if leg.line is None:
+                    raise HTTPException(400, "Line required for spread bet")
                 proj = game_pred["projected_spread"]
                 edge = abs(proj - leg.line)
-                if proj > leg.line:
-                    side = leg.home_team.upper()
-                    line_display = leg.line
-                else:
-                    side = leg.away_team.upper()
-                    line_display = -leg.line
-
-                prob = 0.5 + edge * 0.05
-                prob = np.clip(prob, 0.20, 0.80)
+                side = leg.home_team.upper() if proj > leg.line else leg.away_team.upper()
+                display_line = leg.line if proj > leg.line else -leg.line
+                prob = np.clip(0.5 + edge * 0.05, 0.20, 0.80)
                 leg_odds = round(max(1.0 / prob, 1.10), 2)
 
                 leg_detail = {
                     "type": "spread",
-                    "bet": f"{leg.away_team.upper()} @ {leg.home_team.upper()} {side} {line_display:+.1f}",
+                    "bet": f"{leg.away_team.upper()} @ {leg.home_team.upper()} {side} {display_line:+.1f}",
                     "projection": round(proj, 1),
                     "edge": round(edge, 1),
                     "probability": round(prob * 100, 1),
@@ -722,11 +717,12 @@ async def build_parlay(legs: List[ParlayLeg]):
                 }
 
             elif leg.bet_type == "total":
+                if leg.line is None:
+                    raise HTTPException(400, "Line required for total bet")
                 proj = game_pred["projected_total"]
                 edge = abs(proj - leg.line)
                 direction = "OVER" if proj > leg.line else "UNDER"
-                prob = 0.5 + (proj - leg.line) * 0.06
-                prob = np.clip(prob, 0.20, 0.80)
+                prob = np.clip(0.5 + (proj - leg.line) * 0.06, 0.20, 0.80)
                 leg_odds = round(max(1.0 / prob, 1.10), 2)
 
                 leg_detail = {
@@ -737,6 +733,9 @@ async def build_parlay(legs: List[ParlayLeg]):
                     "probability": round(prob * 100, 1),
                     "decimal_odds": leg_odds
                 }
+
+        else:
+            continue  # skip invalid legs
 
         total_decimal *= leg_odds
         details.append(leg_detail)
