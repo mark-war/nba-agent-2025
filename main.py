@@ -528,8 +528,8 @@ class ParlayLeg(BaseModel):
     bet_type: Optional[str] = None          # "spread" or "total"
     total_over: Optional[bool] = None       # only used for totals
 
-@app.post("/build-parlay")
-async def build_parlay(legs: List[ParlayLeg]):
+@app.post("/build-parlay-old")
+async def build_parlayOLD(legs: List[ParlayLeg]):
     if not legs:
         raise HTTPException(400, "No legs provided")
 
@@ -619,6 +619,131 @@ async def build_parlay(legs: List[ParlayLeg]):
         "parlay_odds": round(total_decimal, 2),
         "total_legs": len(legs),
         "estimated_fair_odds": round(total_decimal, 2),
+        "possible_win_per_100php": round((total_decimal - 1) * 100, 2),
+        "legs": details,
+        "model_version": MODEL_VERSION
+    }
+
+@app.post("/build-parlay")
+async def build_parlay(legs: List[ParlayLeg]):
+    if not legs:
+        raise HTTPException(400, "No legs provided")
+
+    total_decimal = 1.0
+    details = []
+
+    for leg in legs:
+        leg_detail = {}
+        leg_odds = 1.0
+
+        # ——— PLAYER PROP ———
+        if leg.player:
+            req = PlayerRequest(player_name=leg.player, opponent_abbr="AVG")
+            try:
+                pred = predict_player_ml(req)
+            except:
+                raise HTTPException(404, f"Player not found: {leg.player}")
+
+            if leg.stat == "points":
+                projection = pred["projected_pts"]
+            elif leg.stat == "rebounds":
+                projection = pred.get("REB_PG", 6.0)
+            elif leg.stat == "assists":
+                projection = pred.get("AST_PG", 5.0)
+            else:
+                projection = pred["projected_pts"]
+
+            edge = (projection - leg.line) if leg.over else (leg.line - projection)
+            prob = 0.5 + edge * 0.04
+            prob = np.clip(prob, 0.15, 0.85)
+            leg_odds = round(max(1.0 / prob, 1.05), 2)
+
+            leg_detail = {
+                "type": "player_prop",
+                "bet": f"{leg.player} {'OVER' if leg.over else 'UNDER'} {leg.line} {leg.stat}",
+                "projection": round(projection, 1),
+                "edge_pts": round(edge, 1),
+                "probability": round(prob * 100, 1),
+                "decimal_odds": leg_odds
+            }
+
+        # ——— GAME BETS (spread / total / moneyline) ———
+        elif leg.home_team and leg.away_team and leg.bet_type:
+            game_pred = predict_game_ml(GamePredictionRequest(
+                home_team=leg.home_team.upper(),
+                away_team=leg.away_team.upper(),
+                spread_line=leg.line if leg.bet_type == "spread" else None,
+                total_line=leg.line if leg.bet_type == "total" else None
+            ))
+
+            if leg.bet_type == "moneyline":
+                # Pure moneyline — no line needed
+                proj_spread = game_pred["projected_spread"]
+                win_prob_home = game_pred["win_prob_home"] / 100
+
+                if proj_spread > 0:
+                    winner = leg.home_team.upper()
+                    prob = win_prob_home
+                else:
+                    winner = leg.away_team.upper()
+                    prob = 1 - win_prob_home
+
+                prob = np.clip(prob, 0.15, 0.85)
+                leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+                leg_detail = {
+                    "type": "moneyline",
+                    "bet": f"{winner} to win (incl. overtime)",
+                    "win_probability": round(prob * 100, 1),
+                    "decimal_odds": leg_odds
+                }
+
+            elif leg.bet_type == "spread":
+                proj = game_pred["projected_spread"]
+                edge = abs(proj - leg.line)
+                if proj > leg.line:
+                    side = leg.home_team.upper()
+                    line_display = leg.line
+                else:
+                    side = leg.away_team.upper()
+                    line_display = -leg.line
+
+                prob = 0.5 + edge * 0.05
+                prob = np.clip(prob, 0.20, 0.80)
+                leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+                leg_detail = {
+                    "type": "spread",
+                    "bet": f"{leg.away_team.upper()} @ {leg.home_team.upper()} {side} {line_display:+.1f}",
+                    "projection": round(proj, 1),
+                    "edge": round(edge, 1),
+                    "probability": round(prob * 100, 1),
+                    "decimal_odds": leg_odds
+                }
+
+            elif leg.bet_type == "total":
+                proj = game_pred["projected_total"]
+                edge = abs(proj - leg.line)
+                direction = "OVER" if proj > leg.line else "UNDER"
+                prob = 0.5 + (proj - leg.line) * 0.06
+                prob = np.clip(prob, 0.20, 0.80)
+                leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+                leg_detail = {
+                    "type": "total",
+                    "bet": f"{leg.away_team.upper()} @ {leg.home_team.upper()} {direction} {leg.line}",
+                    "projection": round(proj, 1),
+                    "edge": round(edge, 1),
+                    "probability": round(prob * 100, 1),
+                    "decimal_odds": leg_odds
+                }
+
+        total_decimal *= leg_odds
+        details.append(leg_detail)
+
+    return {
+        "parlay_odds": round(total_decimal, 2),
+        "total_legs": len(details),
         "possible_win_per_100php": round((total_decimal - 1) * 100, 2),
         "legs": details,
         "model_version": MODEL_VERSION
