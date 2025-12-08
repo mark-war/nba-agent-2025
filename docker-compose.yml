@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  # Main API service
+  api:
+    build: .
+    container_name: nba_agent_api
+    ports:
+      - "8000:8000"
+    environment:
+      - ODDS_API_KEY=${ODDS_API_KEY}
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - nba_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Scheduler service (runs daily updates)
+  scheduler:
+    build: .
+    container_name: nba_agent_scheduler
+    command: python daily_update.py --schedule
+    environment:
+      - ODDS_API_KEY=${ODDS_API_KEY}
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - nba_network
+
+volumes:
+  redis_data:
+
+networks:
+  nba_network:
+    driver: bridge

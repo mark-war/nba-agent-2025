@@ -1,0 +1,107 @@
+# API Configuration
+api:
+  title: "NBA Betting Agent Pro"
+  version: "4.0.0"
+  host: "0.0.0.0"
+  port: 8000
+  reload: true  # Set to false in production
+  
+# Cache Configuration
+cache:
+  prediction_duration_minutes: 30
+  injury_duration_hours: 1
+  game_duration_hours: 6
+  max_cache_size: 10000
+
+# Model Configuration
+model:
+  player:
+    n_estimators: 800
+    max_depth: 6
+    learning_rate: 0.03
+    subsample: 0.85
+    colsample_bytree: 0.85
+    min_child_weight: 3
+    
+  team:
+    n_estimators: 500
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.9
+
+# Training Configuration
+training:
+  test_size: 0.2
+  random_state: 42
+  incremental_trees_to_add: 100
+  min_games_played: 5
+  min_minutes_per_game: 12.0
+
+# Data Sources
+data_sources:
+  nba_stats_base_url: "https://stats.nba.com/stats/"
+  odds_api_base_url: "https://api.the-odds-api.com/v4/"
+  espn_injuries_url: "https://www.espn.com/nba/injuries"
+  espn_scoreboard_url: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+
+# Update Schedule (for scheduler)
+schedule:
+  full_update: "08:00"
+  injury_checks: ["12:00", "16:00"]
+  model_retrain: "02:00"
+
+# Prediction Thresholds
+thresholds:
+  min_edge_spread: 3.0
+  min_edge_total: 5.0
+  high_confidence_spread_edge: 5.0
+  high_confidence_total_edge: 7.0
+  injury_questionable_multiplier: 0.85
+  injury_probable_multiplier: 0.95
+  favorable_matchup_multiplier: 1.08
+  tough_matchup_multiplier: 0.92
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/nba_agent.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+# Feature Engineering
+features:
+  player:
+    - MIN_PG
+    - USG_PCT
+    - TS_PCT
+    - FTA_PG
+    - AST_PG
+    - FG3A_PG
+    - PER
+    - FG_PCT
+    - FG3_PCT
+    - AGE
+    - PACE
+  
+  team:
+    - home_OFF
+    - home_DEF
+    - home_PACE
+    - away_OFF
+    - away_DEF
+    - away_PACE
+
+# API Rate Limits
+rate_limits:
+  nba_stats_delay_seconds: 2
+  odds_api_monthly_limit: 500
+  max_retries: 10
+  retry_delay_seconds: 5
+
+# CORS Settings
+cors:
+  allow_origins: ["*"]  # In production, specify your frontend URLs
+  allow_credentials: true
+  allow_methods: ["*"]
+  allow_headers: ["*"]
