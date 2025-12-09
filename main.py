@@ -329,123 +329,6 @@ PLAYER_NAME_LOOKUP = {
 }
 
 # ==================== PLAYER PREDICTION ====================
-@app.post("/predict-old")
-def predict_player_ml_old(req: PlayerRequest):
-    """Predict player performance with smart caching"""
-    
-    # Check cache first
-    cache_key = f"player_{req.player_name}_{req.opponent_abbr}_{datetime.now().strftime('%Y%m%d%H')}"
-    cached = prediction_cache.get(cache_key)
-    if cached:
-        logger.info(f"Cache hit for {req.player_name}")
-        return cached
-    
-    # Check if injury data is stale
-    global LAST_INJURY_UPDATE
-    if datetime.now() - LAST_INJURY_UPDATE > INJURY_REFRESH_INTERVAL:
-        logger.info("Injury data stale, refreshing...")
-        refresh_injuries()
-    
-    # Find player
-    matches = df_players[df_players['PLAYER_NAME'].str.lower().str.contains(req.player_name.lower(), na=False)]
-    if matches.empty:
-        return {
-            "error": "Player not found", 
-            "available_players": sorted(df_players['PLAYER_NAME'].head(20).tolist())
-        }
-
-    p = matches.iloc[0]
-    player_name = p['PLAYER_NAME']
-    team_abbr = p.get('TEAM_ABBREVIATION', 'UNK')
-    
-    injury = get_injury_status(player_name)
-    
-    # Handle injured players
-    if injury['status'] in ['OUT', 'Doubtful']:
-        result = {
-            "player": player_name, 
-            "team": team_abbr, 
-            "opponent": req.opponent_abbr.upper(),
-            "status": injury['status'], 
-            "injury_type": injury['injury_type'],
-            "recommendation": "AVOID ⛔", 
-            "projected_pts": 0.0, 
-            "confidence": "N/A",
-            "cached": False
-        }
-        prediction_cache.set(cache_key, result)
-        return result
-
-    # Calculate features
-    features_dict = calculate_features_from_row(p)
-    if not features_dict:
-        raise HTTPException(500, "Feature calculation failed")
-    
-    season_avg = features_dict['PTS_PG']
-    
-    # Get opponent defense rating
-    opp_row = df_teams[df_teams['TEAM_ABBREVIATION'] == req.opponent_abbr.upper()]
-    opp_def = float(opp_row['DEF_RATING'].iloc[0]) if not opp_row.empty else 110.0
-    
-    # Make prediction
-    features = build_feature_vector(features_dict)
-    pts_raw = float(player_model.predict(features)[0])
-    pts_projection = np.clip(pts_raw, season_avg * 0.4, season_avg * 1.6)
-    
-    # Adjust for matchup
-    league_avg_def = 112.0
-    if opp_def < league_avg_def - 3:
-        pts_projection *= 1.08
-        matchup = "Favorable 🎯"
-    elif opp_def > league_avg_def + 3:
-        pts_projection *= 0.92
-        matchup = "Tough 🛡️"
-    else:
-        matchup = "Neutral ⚖️"
-    
-    # Adjust for injury status
-    confidence = "High"
-    if injury['status'] == "Questionable":
-        pts_projection *= 0.85
-        confidence = "Low"
-    elif injury['status'] == "Probable":
-        pts_projection *= 0.95
-        confidence = "Medium"
-    
-    pts_projection = round(pts_projection, 1)
-    
-    # Generate recommendation
-    if confidence == "High" and pts_projection > season_avg * 1.05:
-        recommendation = f"BET OVER {pts_projection - 0.5:.1f} 💰"
-    elif confidence == "High" and pts_projection < season_avg * 0.95:
-        recommendation = f"BET UNDER {pts_projection + 0.5:.1f} 💰"
-    else:
-        recommendation = "MONITOR 👀"
-    
-    result = {
-        "player": player_name, 
-        "team": team_abbr, 
-        "opponent": req.opponent_abbr.upper(),
-        "status": injury['status'], 
-        "injury_type": injury.get('injury_type', 'None'),
-        "projected_pts": pts_projection, 
-        "season_avg_pts": round(season_avg, 1),
-        "confidence": confidence, 
-        "recommendation": recommendation,
-        "matchup": matchup,
-        "rebounds_per_game": features_dict.get('REB_PG', 0),
-        "assists_per_game": features_dict.get('AST_PG', 0),
-        "steals_per_game": features_dict.get('STL_PG', 0),
-        "blocks_per_game": features_dict.get('BLK_PG', 0),
-        "threes_made_per_game": features_dict.get('FG3M_PG', 0),
-        "cached": False
-    }
-    
-    # Cache the result
-    prediction_cache.set(cache_key, result)
-    
-    return result
-
 @app.post("/predict")
 def predict_player_ml(req: PlayerRequest):
     raw_name = req.player_name.strip()
@@ -769,8 +652,7 @@ def best_bets(
 # ==================== PARLAY BUILDER ====================
 @app.post("/build-parlay")
 async def build_parlay(legs: List[ParlayLeg]):
-    """Build multi-leg parlay with odds calculation"""
-    
+    """Ultimate Parlay Builder — Player Props + Game Bets + Super Clear Output"""
     if not legs:
         raise HTTPException(400, "No legs provided")
 
@@ -778,35 +660,124 @@ async def build_parlay(legs: List[ParlayLeg]):
     details = []
 
     for leg in legs:
+        leg_detail = {}
+        leg_odds = 1.0
+
+        # ——— PLAYER PROP ———
         if leg.player:
-            req = PlayerRequest(player_name=leg.player, opponent_abbr="AVG")
-            pred = predict_player_ml(req)
-            
+            if leg.line is None:
+                raise HTTPException(400, f"Line required for {leg.player}")
+
+            pred = predict_player_ml(PlayerRequest(player_name=leg.player, opponent_abbr="AVG"))
+
+            # Block injured players
+            if pred.get("status") in ["OUT", "Doubtful"]:
+                raise HTTPException(400, f"Cannot bet on {leg.player}: {pred['status']} - {pred.get('injury_type', '')}")
+
             base = {
                 "points": pred.get("projected_pts", 20.0),
                 "rebounds": pred.get("rebounds_per_game", 6.0),
                 "assists": pred.get("assists_per_game", 5.0),
+                "steals": pred.get("steals_per_game", 0.8),
+                "blocks": pred.get("blocks_per_game", 0.6),
+                "threes": pred.get("threes_made_per_game", 2.0),
+                "pra": pred.get("projected_pts", 20.0) + pred.get("rebounds_per_game", 6.0) + pred.get("assists_per_game", 5.0)
             }
-            
-            projection = base.get(leg.stat, base["points"])
+
+            stat_map = {
+                "points": "Points", "rebounds": "Rebounds", "assists": "Assists",
+                "steals": "Steals", "blocks": "Blocks", "threes": "3PM", "pra": "PRA"
+            }
+            stat_key = leg.stat.lower()
+            if stat_key not in base:
+                stat_key = "points"
+
+            projection = base[stat_key]
             edge = (projection - leg.line) if leg.over else (leg.line - projection)
             prob = np.clip(0.5 + edge * 0.04, 0.15, 0.85)
             leg_odds = round(max(1.0 / prob, 1.05), 2)
-            
-            details.append({
-                "bet": f"{leg.player} {'OVER' if leg.over else 'UNDER'} {leg.line} {leg.stat}",
+
+            leg_detail = {
+                "type": "player_prop",
+                "player": pred["player"],
+                "bet": f"{pred['player']} {'OVER' if leg.over else 'UNDER'} {leg.line} {stat_map.get(leg.stat, leg.stat.upper())}",
+                "who_to_bet": f"BET {'OVER' if leg.over else 'UNDER'} {leg.line}",
                 "projection": round(projection, 1),
+                "edge": round(edge, 1),
+                "probability": round(prob * 100, 1),
                 "decimal_odds": leg_odds,
-                "status": pred.get("status", "Active"),
-                "injury_type": pred.get("injury_type", "None")
-            })
+                "status": pred.get("status", "Active")
+            }
+
+        # ——— GAME BETS ———
+        elif leg.home_team and leg.away_team and leg.bet_type:
+            home = leg.home_team.upper()
+            away = leg.away_team.upper()
+            game_pred = predict_game_ml(GamePredictionRequest(home_team=home, away_team=away))
+
+            if leg.bet_type == "moneyline":
+                prob_home = game_pred["win_prob_home"] / 100
+                prob = max(prob_home, 1 - prob_home)
+                favored = home if prob_home > 0.5 else away
+                prob = np.clip(prob, 0.15, 0.85)
+                leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+                leg_detail = {
+                    "type": "moneyline",
+                    "bet": f"{favored} Moneyline",
+                    "who_to_bet": f"BET {favored} TO WIN",
+                    "game": f"{away} @ {home}",
+                    "win_probability": round(prob * 100, 1),
+                    "decimal_odds": leg_odds,
+                    "note": f"Our model: {favored} has {round(prob * 100, 1)}% chance"
+                }
+
+            elif leg.bet_type == "spread" and leg.line is not None:
+                proj = game_pred["projected_spread"]
+                edge = abs(proj - leg.line)
+                side = home if proj > leg.line else away
+                display_line = leg.line if proj > leg.line else -leg.line
+                prob = np.clip(0.5 + edge * 0.05, 0.20, 0.80)
+                leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+                leg_detail = {
+                    "type": "spread",
+                    "bet": f"{side} {display_line:+.1f}",
+                    "who_to_bet": f"BET {side} {display_line:+.1f}",
+                    "game": f"{away} @ {home}",
+                    "projection": round(proj, 1),
+                    "edge": round(edge, 1),
+                    "decimal_odds": leg_odds
+                }
+
+            elif leg.bet_type == "total" and leg.line is not None:
+                proj = game_pred["projected_total"]
+                direction = "OVER" if proj > leg.line else "UNDER"
+                edge = abs(proj - leg.line)
+                prob = np.clip(0.5 + edge * 0.06, 0.20, 0.80)
+                leg_odds = round(max(1.0 / prob, 1.10), 2)
+
+                leg_detail = {
+                    "type": "total",
+                    "bet": f"{direction} {leg.line}",
+                    "who_to_bet": f"BET THE {direction}",
+                    "game": f"{away} @ {home}",
+                    "projection": round(proj, 1),
+                    "edge": round(edge, 1),
+                    "decimal_odds": leg_odds
+                }
+
+        if leg_detail:
             total_decimal *= leg_odds
+            details.append(leg_detail)
 
     return {
         "parlay_odds": round(total_decimal, 2),
         "possible_win_per_100php": round((total_decimal - 1) * 100, 2),
+        "total_legs": len(details),
         "legs": details,
-        "risk_level": "High" if total_decimal > 10 else "Medium" if total_decimal > 5 else "Low"
+        "risk_level": "High" if total_decimal > 10 else "Medium" if total_decimal > 5 else "Low",
+        "model_version": MODEL_VERSION
     }
 
 # ==================== DATA MANAGEMENT ENDPOINTS ====================
