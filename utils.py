@@ -7,6 +7,10 @@ from datetime import datetime, timedelta
 from typing import List, Dict
 import json
 import os
+
+from io import StringIO
+from bs4 import BeautifulSoup  # ← Make sure you have: pip install beautifulsoup4 lxml
+
 from dotenv import load_dotenv
 load_dotenv()
 api_key = os.getenv("ODDS_API_KEY")
@@ -205,78 +209,110 @@ def fetch_team_stats():
     return fallback
 
 # === FETCH INJURIES ===
+import requests
+import pandas as pd
+import time
+from pathlib import Path
+from bs4 import BeautifulSoup  # pip install beautifulsoup4 (if not already)
+
 def fetch_live_injuries():
-    """Fetch live NBA injuries from ESPN"""
+    """Fetch live NBA injuries from ESPN with robust parsing + critical overrides"""
     print("Fetching LIVE NBA injuries from ESPN...")
+
+    # CRITICAL OVERRIDES: Season-long injuries that APIs often miss
+    CRITICAL_INJURIES = [
+        {"player_name": "Jayson Tatum", "team": "BOS", "status": "OUT", "injury_type": "Achilles (rehab, possible late return)"},
+        {"player_name": "Damian Lillard", "team": "POR", "status": "OUT", "injury_type": "Achilles (not returning 2025-26)"},
+        {"player_name": "Tyrese Haliburton", "team": "IND", "status": "OUT", "injury_type": "Achilles (surgery, season-ending)"},
+        # Add more if needed (e.g., Kawhi: {"player_name": "Kawhi Leonard", "team": "LAC", "status": "OUT", "injury_type": "Knee"})
+    ]
+
     url = "https://www.espn.com/nba/injuries"
-    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    
+
+    all_injuries = []
+
     try:
-        time.sleep(3)
-        r = requests.get(url, headers=headers, timeout=40)
-        r.raise_for_status()
-        
-        from io import StringIO
-        tables = pd.read_html(StringIO(r.text))
-        
-        print(f"   Found {len(tables)} tables — processing...")
-        
-        all_injuries = []
-        
-        for i, table in enumerate(tables):
-            if len(table) < 2:
-                continue
-                
-            table = table.iloc[1:].reset_index(drop=True)
-            table = table.dropna(how='all')
-            
-            for _, row in table.iterrows():
-                row_str = " ".join([str(x) for x in row if pd.notna(x)])
-                if len(row_str) < 10 or "Player" in row_str:
-                    continue
-                
-                words = row_str.split()
-                player_name = " ".join(words[:3])
-                
-                status = "Unknown"
-                if "Out" in row_str:
-                    status = "OUT"
-                elif "Day" in row_str or "Questionable" in row_str:
+        time.sleep(2)  # Rate limit
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find all team injury tables (ESPN uses <table class="Table">)
+        tables = soup.find_all("table", class_="Table")
+        print(f"   Found {len(tables)} team tables")
+
+        for table in tables:
+            rows = table.find_all("tr")[1:]  # skip header
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) < 3: continue
+
+                # Player name
+                player_link = cells[0].find("a")
+                if not player_link: continue
+                player_name = player_link.get_text(strip=True)
+
+                # Team
+                team = cells[1].get_text(strip=True)[-3:] if len(cells[1].get_text()) > 3 else "UNK"
+
+                # Status + Injury + Date
+                status_cell = cells[2].get_text(strip=True)
+
+                # Smart parsing: split "OUT - Knee - Dec 12" or "Day-to-Day (ankle)"
+                status = "OUT"
+                injury_type = "Unknown"
+
+                if "Day-to-Day" in status_cell or "Questionable" in status_cell:
                     status = "Questionable"
-                elif "Probable" in row_str:
+                elif "Probable" in status_cell:
                     status = "Probable"
-                
-                # Extract team
-                team_match = pd.Series(row_str).str.extract(r'([A-Z]{3})')
-                team = team_match[0].iloc[0] if not team_match.empty else "UNK"
-                
+
+                # Remove status and date, keep only injury
+                cleaned = status_cell
+                for word in ["OUT", "Questionable", "Probable", "Day-to-Day", "(", ")"]:
+                    cleaned = cleaned.replace(word, "")
+                for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]:
+                    cleaned = cleaned.split(month)[0]  # cut off date
+
+                injury_type = cleaned.strip(" -:").strip()
+                if not injury_type or injury_type == "" or len(injury_type) < 3:
+                    injury_type = "Undisclosed" if status != "OUT" else "Injury"
+
                 all_injuries.append({
-                    "player_name": player_name.strip(),
+                    "player_name": player_name,
                     "team": team,
                     "status": status,
-                    "injury_type": row_str[:100]
+                    "injury_type": injury_type
                 })
-        
-        if not all_injuries:
-            raise ValueError("No injuries parsed")
-            
-        df = pd.DataFrame(all_injuries).drop_duplicates(subset=['player_name'])
-        df.to_csv("data/injuries.csv", index=False)
-        print(f"✓ LIVE INJURIES SUCCESS: {len(df)} unique players")
-        return df.to_dict('records')
-        
+
+        print(f"   Parsed {len(all_injuries)} injuries from tables")
+
     except Exception as e:
-        print(f"⚠ Injury fetch failed: {e} — using backup")
-        backup = [
-            {"player_name": "Jayson Tatum", "team": "BOS", "status": "OUT", "injury_type": "Achilles"},
-            {"player_name": "Joel Embiid", "team": "PHI", "status": "Questionable", "injury_type": "Knee"},
-        ]
-        pd.DataFrame(backup).to_csv("data/injuries.csv", index=False)
-        return backup
+        print(f"   ESPN fetch failed: {e} — falling back to criticals")
+
+    # Merge: Add/update critical injuries (ensures Tatum/Lillard always appear)
+    seen_players = {inj["player_name"] for inj in all_injuries}
+    for critical in CRITICAL_INJURIES:
+        if critical["player_name"] not in seen_players:
+            print(f"   Adding override: {critical['player_name']}")
+            all_injuries.append(critical)
+        else:
+            # Update existing with detailed critical info
+            for inj in all_injuries:
+                if inj["player_name"] == critical["player_name"]:
+                    inj.update(critical)
+
+    # Dedupe (keep last/most detailed)
+    df = pd.DataFrame(all_injuries).drop_duplicates(subset=["player_name"], keep="last")
+
+    df.to_csv("data/injuries.csv", index=False)
+    print(f"SUCCESS: {len(df)} injuries saved")
+    return df.to_dict("records")
 
 # === FETCH TODAY'S GAMES ===
 def fetch_todays_games_with_odds() -> List[Dict]:

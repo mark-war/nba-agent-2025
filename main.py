@@ -1,5 +1,4 @@
 # main.py — PRODUCTION-READY with Caching, Smart Predictions & Scalability
-import functools
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -41,6 +40,11 @@ team_model = joblib.load(MODELS_DIR / "team_model_2025.pkl")
 try:
     df_players = pd.read_csv(DATA_DIR / "2025_26_players.csv")
     df_teams = pd.read_csv(DATA_DIR / "2025_26_teams.csv")
+    
+    # Clean player names - remove any NaN or non-string values
+    df_players = df_players[df_players['PLAYER_NAME'].notna()].copy()
+    df_players = df_players[df_players['PLAYER_NAME'].astype(str).str.strip() != ''].copy()
+    
     logger.info(f"Data loaded | Players: {len(df_players)} | Teams: {len(df_teams)}")
 except Exception as e:
     logger.error(f"Failed to load data: {e}")
@@ -58,18 +62,6 @@ except Exception as e:
         'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE'
     ]
     MODEL_VERSION = 'v3.1'
-
-# Optional: pre-build a normalized player lookup for speed
-@functools.lru_cache(maxsize=1)
-def _build_player_lookup():
-    """Pre-normalize all player names for ultra-fast lookup"""
-    lookup = {}
-    for name in df_players['PLAYER_NAME']:
-        norm = normalize_name_lower(name)
-        lookup[norm] = name  # maps normalized → original/official name
-    return lookup
-
-PLAYER_NAME_LOOKUP = _build_player_lookup()
 
 # ==================== SMART CACHING SYSTEM ====================
 class PredictionCache:
@@ -144,45 +136,32 @@ def get_injury_status_cached(player_name: str) -> str:
     return json.dumps(get_injury_status(player_name))
 
 def get_injury_status(player_name: str) -> Dict:
-    """Enhanced fuzzy matching with accent/diacritic normalization"""
-    if not player_name:
-        return {"status": "Active", "injury_type": "None", "team": ""}
-
-    # Normalize input name
-    normalized_input = normalize_name_lower(player_name)
-    canonical_input = get_canonical_name(player_name)
-
-    # Build normalized injury lookup if not exists
-    global _normalized_injury_cache
-    if '_normalized_injury_cache' not in globals():
-        _normalized_injury_cache = {
-            normalize_name_lower(name): name for name in INJURY_STATUS.keys()
-        }
-
-    # 1. Exact match on normalized name
-    if normalized_input in _normalized_injury_cache:
-        original_name = _normalized_injury_cache[normalized_input]
-        return INJURY_STATUS[original_name]
-
-    # 2. Substring match
-    for norm_key, orig_name in _normalized_injury_cache.items():
-        if normalized_input in norm_key or norm_key in normalized_input:
-            return INJURY_STATUS[orig_name]
-
-    # 3. Fuzzy match fallback (still safe because we normalized)
+    """Enhanced fuzzy matching for injury status"""
+    key = player_name.strip().title()
+    
+    # Direct match
+    if key in INJURY_STATUS:
+        return INJURY_STATUS[key]
+    
+    # Substring match (fast)
+    for injury_name in INJURY_STATUS:
+        if key in injury_name or injury_name in key:
+            return INJURY_STATUS[injury_name]
+    
+    # Fuzzy match with similarity score
     best_match = None
     best_score = 0
-    for norm_key, orig_name in _normalized_injury_cache.items():
-        similarity = SequenceMatcher(None, normalized_input, norm_key).ratio()
-        if similarity > best_score and similarity > 0.80:
+    
+    for injury_name in INJURY_STATUS:
+        similarity = SequenceMatcher(None, key.lower(), injury_name.lower()).ratio()
+        if similarity > best_score and similarity > 0.80:  # 80% threshold
             best_score = similarity
-            best_match = orig_name
-
+            best_match = injury_name
+    
     if best_match:
-        logger.info(f"Fuzzy matched (normalized): '{player_name}' → '{best_match}' ({best_score:.0%})")
+        logger.info(f"Fuzzy matched: '{key}' → '{best_match}' ({best_score:.0%})")
         return INJURY_STATUS[best_match]
-
-    # Default: assume active
+    
     return {"status": "Active", "injury_type": "None", "team": ""}
 
 # Initial load
@@ -232,14 +211,22 @@ def calculate_features_from_row(player_row):
         per = max(per, 8.0)
 
         return {
-            'PTS_PG': round(pts_pg, 1), 'MIN_PG': round(min_pg, 1), 
-            'USG_PCT': round(usg_pct, 1), 'TS_PCT': round(ts_pct, 3), 
-            'FTA_PG': round(fta_pg, 1), 'AST_PG': round(ast_pg, 1),
-            'FG3A_PG': round(fg3a_pg, 1), 'PER': round(per, 1), 
-            'FG_PCT': round(fg_pct, 3), 'FG3_PCT': round(fg3_pct, 3), 
-            'AGE': int(age), 'PACE': round(pace, 1),
-            'REB_PG': round(reb_pg, 1), 'STL_PG': round(stl_pg, 1),
-            'BLK_PG': round(blk_pg, 1), 'TOV_PG': round(tov_pg, 1),
+            'PTS_PG': round(pts_pg, 1), 
+            'MIN_PG': round(min_pg, 1), 
+            'USG_PCT': round(usg_pct, 1), 
+            'TS_PCT': round(ts_pct, 3), 
+            'FTA_PG': round(fta_pg, 1), 
+            'AST_PG': round(ast_pg, 1),
+            'FG3A_PG': round(fg3a_pg, 1), 
+            'PER': round(per, 1), 
+            'FG_PCT': round(fg_pct, 3), 
+            'FG3_PCT': round(fg3_pct, 3), 
+            'AGE': int(age), 
+            'PACE': round(pace, 1),
+            'REB_PG': round(reb_pg, 1), 
+            'STL_PG': round(stl_pg, 1),
+            'BLK_PG': round(blk_pg, 1), 
+            'TOV_PG': round(tov_pg, 1),
             'FG3M_PG': round(fg3a_pg * fg3_pct, 1),
         }
     except Exception as e:
@@ -248,8 +235,20 @@ def calculate_features_from_row(player_row):
 
 def build_feature_vector(features_dict):
     """Build feature vector for model input"""
-    order = ['MIN_PG','USG_PCT','TS_PCT','FTA_PG','AST_PG','FG3A_PG','PER','FG_PCT','FG3_PCT','AGE','PACE']
-    values = [float(features_dict[col]) for col in order]
+    order = ['MIN_PG','USG_PCT','TS_PCT','FTA_PG','AST_PG','FG3A_PG','PER','FG_PCT','FG3_PCT','AGE','PACE','STL_PG','BLK_PG','TOV_PG','REB_PG']
+    values = []
+    for col in order:
+        val = features_dict.get(col)
+        if val is None:
+            # Fallbacks for missing values
+            val = {
+                'STL_PG': 1.0,
+                'BLK_PG': 0.5,
+                'TOV_PG': 2.5,
+                'REB_PG': 5.0,
+            }.get(col, 0.0)
+        values.append(float(val))
+    
     return np.array([values], dtype=np.float32)
 
 # ==================== FASTAPI APP ====================
@@ -323,9 +322,15 @@ class ParlayLeg(BaseModel):
     away_team: Optional[str] = None
     bet_type: Optional[str] = None
 
+# Build normalized lookup once at startup (after df_players is loaded)
+PLAYER_NAME_LOOKUP = {
+    normalize_name_lower(name): name
+    for name in df_players['PLAYER_NAME'] if pd.notna(name)
+}
+
 # ==================== PLAYER PREDICTION ====================
-@app.post("/predictX")
-def predict_player_mlX(req: PlayerRequest):
+@app.post("/predict-old")
+def predict_player_ml_old(req: PlayerRequest):
     """Predict player performance with smart caching"""
     
     # Check cache first
@@ -443,84 +448,95 @@ def predict_player_mlX(req: PlayerRequest):
 
 @app.post("/predict")
 def predict_player_ml(req: PlayerRequest):
-    """Predict player performance – now works with any name variation"""
-    
     raw_name = req.player_name.strip()
     opponent = req.opponent_abbr.upper() or "AVG"
 
-    # ── STEP 1: Canonical name resolution (handles accents, typos, etc.) ──
+    # 1. Use name_mapper to resolve any variation → canonical name
     canonical_name = get_canonical_name(raw_name)
-    normalized_key = normalize_name_lower(canonical_name)
+    if not canonical_name:
+        return {"error": "Invalid player name", "input": raw_name}
 
-    # Use pre-built lookup for speed
-    if normalized_key not in PLAYER_NAME_LOOKUP:
-        # Fallback fuzzy search if not exact
-        from difflib import get_close_matches
-        close = get_close_matches(normalized_key, PLAYER_NAME_LOOKUP.keys(), n=5, cutoff=0.75)
-        if close:
-            canonical_name = PLAYER_NAME_LOOKUP[close[0]]
-            logger.info(f"Name resolved: '{raw_name}' → '{canonical_name}'")
-        else:
-            return {
-                "error": "Player not found",
-                "did_you_mean": close[:3] if 'close' in locals() else None,
-                "tip": "Try: Luka Doncic, Nikola Jokic, Giannis, etc.",
-                "available_players": sorted(df_players['PLAYER_NAME'].head(15).tolist())
-            }
+    norm_key = normalize_name_lower(canonical_name)
+
+    # 2. INJURY CHECK FIRST (Tatum, Lillard, etc.)
+    injury = get_injury_status(canonical_name)
+
+    # 3. OUT/DOUBTFUL → Immediate AVOID
+    if injury['status'] in ['OUT', 'Doubtful']:
+        result = {
+            "player": canonical_name,
+            "input_name": raw_name if raw_name.lower() != canonical_name.lower() else None,
+            "team": injury.get("team", "UNK"),
+            "opponent": opponent,
+            "status": injury['status'],
+            "injury_type": injury['injury_type'],
+            "recommendation": "AVOID - Player is OUT",
+            "projected_pts": 0.0,
+            "confidence": "N/A",
+            "matchup": "N/A",
+            "cached": False
+        }
+        cache_key = f"player_{canonical_name}_{opponent}_{datetime.now().strftime('%Y%m%d%H')}"
+        prediction_cache.set(cache_key, result)
+        return result
+
+    # 4. Try to find in stats CSV using normalized lookup
+    player_name_in_df = None
+    if norm_key in PLAYER_NAME_LOOKUP:
+        player_name_in_df = PLAYER_NAME_LOOKUP[norm_key]
     else:
-        canonical_name = PLAYER_NAME_LOOKUP[normalized_key]
+        # Fuzzy fallback
+        from difflib import get_close_matches
+        close = get_close_matches(norm_key, PLAYER_NAME_LOOKUP.keys(), n=1, cutoff=0.78)
+        if close:
+            player_name_in_df = PLAYER_NAME_LOOKUP[close[0]]
 
-    # Cache key uses canonical name + hour (so same player = cache hit)
-    cache_key = f"player_{canonical_name}_{opponent}_{datetime.now().strftime('%Y%m%d%H')}"
-    cached = prediction_cache.get(cache_key)
-    if cached:
-        logger.info(f"Cache hit for {canonical_name}")
-        return cached
+    # 5. No stats → inactive/rookie
+    if not player_name_in_df:
+        return {
+            "player": canonical_name,
+            "input_name": raw_name if raw_name != canonical_name else None,
+            "status": injury['status'],
+            "recommendation": "NO STATS - Player has no 2025-26 data (rookie/injured?)",
+            "projected_pts": 0.0,
+            "confidence": "N/A",
+            "note": "Possibly injured or new player"
+        }
 
-    # ── STEP 2: Get player row using official name ──
-    player_row = df_players[df_players['PLAYER_NAME'] == canonical_name]
+    # 6. Safe: get row
+    player_row = df_players[df_players['PLAYER_NAME'] == player_name_in_df]
     if player_row.empty:
-        raise HTTPException(500, "Player data missing after name resolution")
+        raise HTTPException(500, "Internal error")
 
     p = player_row.iloc[0]
     team_abbr = p.get('TEAM_ABBREVIATION', 'UNK')
 
-    # ── STEP 3: Injury check (also uses normalized lookup) ──
-    injury = get_injury_status(canonical_name)  # Your improved function from before
+    # Cache key uses resolved name
+    cache_key = f"player_{player_name_in_df}_{opponent}_{datetime.now().strftime('%Y%m%d%H')}"
+    cached = prediction_cache.get(cache_key)
+    if cached:
+        return cached
 
-    if injury['status'] in ['OUT', 'Doubtful']:
-        result = {
-            "player": canonical_name,
-            "input_name": raw_name,
-            "team": team_abbr,
-            "opponent": opponent,
-            "status": injury['status'],
-            "injury_type": injury['injury_type'],
-            "recommendation": "AVOID - Player is OUT/Doubtful",
-            "projected_pts": 0.0,
-            "confidence": "N/A",
-            "cached": False
-        }
-        prediction_cache.set(cache_key, result)
-        return result
+    # Confidence from injury
+    confidence = "High"
+    if injury['status'] == "Questionable":
+        confidence = "Low"
+    elif injury['status'] == "Probable":
+        confidence = "Medium"
 
-    # ── REST OF PREDICTION LOGIC (unchanged) ──
+    # Features & prediction (your existing logic)
     features_dict = calculate_features_from_row(p)
     if not features_dict:
-        raise HTTPException(500, "Failed to calculate player features")
+        raise HTTPException(500, "Feature error")
 
     season_avg = features_dict['PTS_PG']
-
-    # Opponent defense
-    opp_row = df_teams[df_teams['TEAM_ABBREVIATION'] == opponent]
-    opp_def = float(opp_row['DEF_RATING'].iloc[0]) if not opp_row.empty else 110.0
-
-    # Model prediction
     features = build_feature_vector(features_dict)
     pts_raw = float(player_model.predict(features)[0])
     pts_projection = np.clip(pts_raw, season_avg * 0.4, season_avg * 1.6)
 
-    # Matchup adjustment
+    # Matchup
+    opp_row = df_teams[df_teams['TEAM_ABBREVIATION'] == opponent]
+    opp_def = float(opp_row['DEF_RATING'].iloc[0]) if not opp_row.empty else 110.0
     league_avg_def = 112.0
     if opp_def < league_avg_def - 3:
         pts_projection *= 1.08
@@ -531,28 +547,23 @@ def predict_player_ml(req: PlayerRequest):
     else:
         matchup = "Neutral"
 
-    # Injury probability adjustment
-    confidence = "High"
-    if injury['status'] == "Questionable":
+    if confidence == "Low":
         pts_projection *= 0.85
-        confidence = "Low"
-    elif injury['status'] == "Probable":
+    elif confidence == "Medium":
         pts_projection *= 0.95
-        confidence = "Medium"
 
     pts_projection = round(pts_projection, 1)
 
-    # Recommendation
-    if confidence == "High" and pts_projection > season_avg * 1.05:
-        recommendation = f"STRONG BUY OVER {pts_projection - 0.5:.1f}"
-    elif confidence == "High" and pts_projection < season_avg * 0.95:
-        recommendation = f"STRONG BUY UNDER {pts_projection + 0.5:.1f}"
-    else:
-        recommendation = "HOLD / MONITOR"
+    recommendation = "MONITOR"
+    if confidence == "High":
+        if pts_projection > season_avg * 1.05:
+            recommendation = f"BET OVER {pts_projection - 0.5:.1f}"
+        elif pts_projection < season_avg * 0.95:
+            recommendation = f"BET UNDER {pts_projection + 0.5:.1f}"
 
     result = {
-        "player": canonical_name,
-        "input_name": raw_name if raw_name.lower() != canonical_name.lower() else None,
+        "player": player_name_in_df,
+        "input_name": raw_name if raw_name.lower() != player_name_in_df.lower() else None,
         "team": team_abbr,
         "opponent": opponent,
         "status": injury['status'],
@@ -562,9 +573,9 @@ def predict_player_ml(req: PlayerRequest):
         "confidence": confidence,
         "recommendation": recommendation,
         "matchup": matchup,
-        "rebounds_per_game": features_dict.get('REB_PG', 0),
-        "assists_per_game": features_dict.get('AST_PG', 0),
-        "threes_made_per_game": features_dict.get('FG3M_PG', 0),
+        "rebounds_per_game": round(features_dict.get('REB_PG', 0), 1),
+        "assists_per_game": round(features_dict.get('AST_PG', 0), 1),
+        "threes_made_per_game": round(features_dict.get('FG3M_PG', 0), 1),
         "cached": False,
         "model_version": MODEL_VERSION
     }
@@ -865,47 +876,16 @@ def health_check():
     }
 
 @app.get("/players")
-def list_players(
-    limit: int = 50,
-    search: Optional[str] = None
-):
-    """Search players with full accent/diacritic support + fuzzy tolerance"""
-    if not search:
-        players = df_players['PLAYER_NAME'].head(limit).tolist()
-        return {
-            "total": len(df_players),
-            "players": sorted(players),
-            "hint": "Use ?search= to find players (supports accents & typos)"
-        }
-
-    query = normalize_name_lower(search.strip())
-
-    # Fast exact or substring match using pre-normalized dict
-    matches = []
-    for norm_key, official_name in PLAYER_NAME_LOOKUP.items():
-        if query in norm_key or norm_key in query:
-            matches.append(official_name)
-        elif len(matches) >= limit * 3:  # early exit
-            break
-
-    # Fallback: fuzzy if no strong matches
-    if len(matches) < 3:
-        from difflib import get_close_matches
-        all_norm = list(PLAYER_NAME_LOOKUP.keys())
-        close = get_close_matches(query, all_norm, n=limit, cutoff=0.7)
-        matches.extend(PLAYER_NAME_LOOKUP.get(c, c) for c in close)
-
-    matches = sorted(set(matches))[:limit]
-
+def list_players(limit: int = 50, search: Optional[str] = None):
+    """List available players with optional search"""
+    players_list = df_players['PLAYER_NAME'].tolist()
+    
+    if search:
+        players_list = [p for p in players_list if search.lower() in p.lower()]
+    
     return {
-        "query": search,
-        "normalized_query": query,
-        "total_found": len(matches),
-        "players": matches,
-        "examples": [
-            "Luka Doncic", "Luka Dončić", "Nikola Jokic", "Nikola Jokić",
-            "Jose Alvarado", "José Alvarado", "Giannis"
-        ]
+        "total": len(players_list),
+        "players": sorted(players_list[:limit])
     }
 
 @app.get("/teams")

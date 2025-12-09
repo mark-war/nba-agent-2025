@@ -3,10 +3,12 @@
 
 from pathlib import Path
 import pandas as pd
+from name_mapper import get_canonical_name
 
 # Load only what your current app actually uses
 DATA_DIR = Path("data")
 df_players   = pd.read_csv(DATA_DIR / "2025_26_players.csv")
+df_players['PLAYER_NAME'] = df_players['PLAYER_NAME'].apply(lambda x: get_canonical_name(str(x)))
 df_teams     = pd.read_csv(DATA_DIR / "2025_26_teams.csv")
 injuries_df  = pd.read_csv(DATA_DIR / "injuries.csv")
 
