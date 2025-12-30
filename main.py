@@ -58,12 +58,17 @@ try:
     MODEL_VERSION = training_metadata.get('version', 'v4.0')
     INJURY_LEARNING_ENABLED = training_metadata.get('injury_learning_enabled', False)
 except Exception as e:
+    logger.warning(f"Metadata load failed ({e}), using full feature set fallback")
     TRAINED_FEATURES = [
         'MIN_PG', 'USG_PCT', 'TS_PCT', 'FTA_PG', 'AST_PG',
-        'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE'
+        'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE',
+        'REB_PG', 'STL_PG', 'BLK_PG', 'TOV_PG', 'FG3M_PG',
+        'GP_RATIO', 'AVAILABILITY_SCORE', 'RECOVERY_FACTOR',
+        'AGE_INJURY_RISK', 'INJURY_RISK_SCORE', 'DAYS_SINCE_INJURY',
+        'INJURY_COUNT_LAST_YEAR', 'CHRONIC_INJURY_FLAG'
     ]
     MODEL_VERSION = 'v4.0'
-    INJURY_LEARNING_ENABLED = False
+    INJURY_LEARNING_ENABLED = True  # Assume full capability
 
 logger.info(f"Model Version: {MODEL_VERSION} | Injury Learning: {INJURY_LEARNING_ENABLED}")
 
