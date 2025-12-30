@@ -292,7 +292,9 @@ def build_feature_vector(features_dict):
                 val = 0.0
         values.append(float(val))
     
-    return np.array([values], dtype=np.float32)
+    vector = np.array([values], dtype=np.float32)
+    logger.debug(f"Built vector with {len(values)} features for model expecting {len(TRAINED_FEATURES)}")
+    return vector
 
 # ==================== FASTAPI APP ====================
 app = FastAPI(
