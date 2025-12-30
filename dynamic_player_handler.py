@@ -45,24 +45,27 @@ class PlayerDataAggregator:
         # Source 1: NBA Stats API (active players with current stats)
         try:
             nba_players = self.fetch_from_nba_stats(season)
-            logger.info(f"✓ NBA Stats: {len(nba_players)} players")
-            all_players.extend(nba_players)
+            if nba_players:
+                logger.info(f"✓ NBA Stats: {len(nba_players)} players")
+                all_players.extend(nba_players)
         except Exception as e:
             logger.error(f"NBA Stats failed: {e}")
         
         # Source 2: BallDontLie (comprehensive roster, includes inactive)
         try:
             bdl_players = self.fetch_from_balldontlie(season)
-            logger.info(f"✓ BallDontLie: {len(bdl_players)} players")
-            all_players.extend(bdl_players)
+            if bdl_players:
+                logger.info(f"✓ BallDontLie: {len(bdl_players)} players")
+                all_players.extend(bdl_players)
         except Exception as e:
             logger.error(f"BallDontLie failed: {e}")
         
         # Source 3: Historical data (for recently inactive players)
         try:
             historical = self.load_historical_data()
-            logger.info(f"✓ Historical: {len(historical)} players")
-            all_players.extend(historical)
+            if historical:
+                logger.info(f"✓ Historical: {len(historical)} players")
+                all_players.extend(historical)
         except Exception as e:
             logger.error(f"Historical load failed: {e}")
         
@@ -84,6 +87,10 @@ class PlayerDataAggregator:
         
         try:
             df = fetch_current_season_stats()
+            
+            # CRITICAL FIX: Add SOURCE column
+            df['SOURCE'] = 'nba_stats'
+            
             return df.to_dict('records')
         except Exception as e:
             logger.error(f"NBA Stats fetch failed: {e}")
@@ -143,7 +150,7 @@ class PlayerDataAggregator:
                         'FT_PCT': 0.0,
                         'AGE': 25,
                         'PACE': 100.0,
-                        'SOURCE': 'balldontlie',
+                        'SOURCE': 'balldontlie',  # ✓ SOURCE added
                         'STATUS': 'INACTIVE'  # Default, will be updated
                     })
                 
@@ -171,10 +178,19 @@ class PlayerDataAggregator:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
                 players = response.json()
-                return self.map_sportsdata_to_schema(players)
+                # Add SOURCE column
+                mapped_players = self.map_sportsdata_to_schema(players)
+                for p in mapped_players:
+                    p['SOURCE'] = 'sportsdata'
+                return mapped_players
         except Exception as e:
             logger.error(f"SportsData fetch failed: {e}")
         
+        return []
+    
+    def map_sportsdata_to_schema(self, players: List[Dict]) -> List[Dict]:
+        """Map SportsData schema to our standard schema"""
+        # Add your mapping logic here if you use this API
         return []
     
     def load_historical_data(self) -> List[Dict]:
@@ -194,8 +210,14 @@ class PlayerDataAggregator:
             if file.exists():
                 try:
                     df = pd.read_csv(file)
-                    df['SOURCE'] = 'historical'
-                    df['STATUS'] = 'INACTIVE'  # Assume inactive unless proven otherwise
+                    
+                    # CRITICAL FIX: Add SOURCE column if missing
+                    if 'SOURCE' not in df.columns:
+                        df['SOURCE'] = 'historical'
+                    
+                    if 'STATUS' not in df.columns:
+                        df['STATUS'] = 'INACTIVE'  # Assume inactive unless proven otherwise
+                    
                     all_historical.extend(df.to_dict('records'))
                     logger.info(f"Loaded {len(df)} players from {file.name}")
                 except Exception as e:
@@ -207,15 +229,28 @@ class PlayerDataAggregator:
         """
         Intelligently merge players from multiple sources
         Priority: NBA Stats > BallDontLie > Historical
+        FIXED: Handles missing SOURCE column gracefully
         """
         if df.empty:
             return df
+        
+        # CRITICAL FIX: Ensure SOURCE column exists
+        if 'SOURCE' not in df.columns:
+            logger.warning("SOURCE column missing! Adding default...")
+            df['SOURCE'] = 'unknown'
         
         # Normalize names for matching
         df['NAME_NORMALIZED'] = df['PLAYER_NAME'].str.lower().str.strip()
         
         # Sort by priority (NBA Stats first)
-        source_priority = {'nba_stats': 1, 'balldontlie': 2, 'sportsdata': 3, 'historical': 4}
+        source_priority = {
+            'nba_stats': 1, 
+            'balldontlie': 2, 
+            'sportsdata': 3, 
+            'historical': 4,
+            'unknown': 99
+        }
+        
         df['SOURCE_PRIORITY'] = df['SOURCE'].map(lambda x: source_priority.get(x, 99))
         df = df.sort_values('SOURCE_PRIORITY')
         
@@ -297,7 +332,7 @@ class InjuryAwareDataBuilder:
             history = self.injury_history[player]
             last_injury = history['injuries'][-1] if history['injuries'] else None
             
-            if last_injury and last_injury['status'] == injury['status']:
+            if last_injury and last_injury.get('status') == injury.get('status'):
                 # Continuation - update duration
                 start_date = datetime.fromisoformat(last_injury['start_date'])
                 duration = (datetime.now() - start_date).days
@@ -306,8 +341,8 @@ class InjuryAwareDataBuilder:
             else:
                 # New injury
                 history['injuries'].append({
-                    'injury_type': injury.get('injury_type'),
-                    'status': injury.get('status'),
+                    'injury_type': injury.get('injury_type', 'Unknown'),
+                    'status': injury.get('status', 'Unknown'),
                     'start_date': today,
                     'duration_days': 0,
                     'last_updated': today
@@ -346,7 +381,7 @@ class InjuryAwareDataBuilder:
             days_since = 999
         
         # Chronic injury detection (same injury type multiple times)
-        injury_types = [inj['injury_type'] for inj in injuries]
+        injury_types = [inj.get('injury_type', 'Unknown') for inj in injuries]
         chronic_flag = 1 if len(injury_types) != len(set(injury_types)) else 0
         
         # Risk score (0-1)
@@ -525,10 +560,15 @@ def refresh_player_database(season: str = '2025-26'):
     
     # Step 2: Update injury history
     from utils import fetch_live_injuries
-    current_injuries = fetch_live_injuries()
+    try:
+        current_injuries = fetch_live_injuries()
+    except Exception as e:
+        logger.warning(f"Could not fetch injuries: {e}")
+        current_injuries = []
     
     injury_builder = InjuryAwareDataBuilder()
-    injury_builder.update_injury_history(current_injuries)
+    if current_injuries:
+        injury_builder.update_injury_history(current_injuries)
     
     # Step 3: Enhance with injury features
     df_enhanced = injury_builder.enhance_training_data(df_all_players)
@@ -566,7 +606,7 @@ if __name__ == "__main__":
     ]
     
     for query in test_queries:
-        print(f"\n Query: '{query}'")
+        print(f"\nQuery: '{query}'")
         result = lookup.get_player_with_fallback(query)
         print(f"  Result: {result.get('PLAYER_NAME', 'NOT FOUND')}")
         print(f"  Status: {result.get('PLAYER_STATUS', 'N/A')}")

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-train.py - Enhanced NBA Betting Agent Training
-Combines your existing incremental learning with optional injury awareness
-Drop-in replacement - works with or without dynamic_player_handler.py
+train.py - Unified NBA Betting Agent Training System
+Combines standard and injury-aware learning in one flexible pipeline
+Works with or without dynamic_player_handler.py
+
+Features:
+- Incremental learning (warm_start)
+- Optional injury-aware features
+- Advanced injury-adjusted targets
+- Both player and team model training
+- Handles inactive/rookie players
+- Daily data updates
 """
 
 from utils import (
@@ -32,166 +40,276 @@ Path("data").mkdir(exist_ok=True)
 try:
     from dynamic_player_handler import (
         refresh_player_database,
-        InjuryAwareDataBuilder
+        InjuryAwareDataBuilder,
+        DynamicPlayerLookup
     )
     INJURY_FEATURES_AVAILABLE = True
-    logger.info("✓ Injury learning features available")
+    logger.info("✓ Advanced injury learning system available")
 except ImportError:
     INJURY_FEATURES_AVAILABLE = False
     logger.info("ℹ Running in standard mode (add dynamic_player_handler.py for injury learning)")
 
-def incremental_train_player_model(retrain_from_scratch=False):
+
+# ==================== ENHANCED FEATURE ENGINEERING ====================
+
+def calculate_enhanced_features(df_players: pd.DataFrame, use_injury_features: bool = True) -> pd.DataFrame:
     """
-    Incremental training - updates model with new data
-    Enhanced with optional injury-aware features
+    Calculate all features including optional injury-aware features
+    
+    Args:
+        df_players: Raw player stats dataframe
+        use_injury_features: Whether to calculate advanced injury features
+    """
+    logger.info("   Calculating features...")
+    df = df_players.copy()
+    
+    # ===== BASIC PER-GAME STATS =====
+    # Helper function to safely get column
+    def safe_col(col_name, default):
+        if col_name in df.columns:
+            return df[col_name].fillna(default).astype(float)
+        else:
+            return default
+    
+    df['MIN_PG'] = safe_col('MIN', 0)
+    df['PTS_PG'] = safe_col('PTS', 0)
+    df['FGA_PG'] = safe_col('FGA', 0)
+    df['FG3A_PG'] = safe_col('FG3A', 0)
+    df['FTA_PG'] = safe_col('FTA', 0)
+    df['AST_PG'] = safe_col('AST', 0)
+    df['REB_PG'] = safe_col('REB', 0)
+    df['STL_PG'] = safe_col('STL', 0)
+    df['BLK_PG'] = safe_col('BLK', 0)
+    df['TOV_PG'] = safe_col('TOV', 0)
+    df['FG_PCT'] = safe_col('FG_PCT', 0.45)
+    df['FG3_PCT'] = safe_col('FG3_PCT', 0.35)
+    df['AGE'] = safe_col('AGE', 27)
+    df['PACE'] = safe_col('PACE', 100.0)
+    
+    # ===== ADVANCED EFFICIENCY METRICS =====
+    # True Shooting %
+    df['TS_PCT'] = df['PTS_PG'] / (2 * (df['FGA_PG'] + 0.44 * df['FTA_PG']))
+    df['TS_PCT'] = df['TS_PCT'].fillna(0.55).clip(0.40, 0.80)
+    
+    # Usage %
+    if 'USG_PCT' not in df.columns or df['USG_PCT'].isna().all():
+        poss_est = df['FGA_PG'] + 0.44 * df['FTA_PG'] + df['TOV_PG']
+        df['USG_PCT'] = np.where(
+            df['MIN_PG'] > 0,
+            (poss_est / df['MIN_PG']) * 48 * 5,
+            25.0
+        )
+    df['USG_PCT'] = df['USG_PCT'].fillna(25.0).clip(12.0, 42.0)
+    
+    # Player Efficiency Rating
+    df['FGM'] = df['FGA_PG'] * df['FG_PCT']
+    df['PER'] = (
+        df['PTS_PG'] + df['REB_PG'] + df['AST_PG'] +
+        3 * (df['STL_PG'] + df['BLK_PG']) - df['TOV_PG'] -
+        (df['FGA_PG'] - df['FGM'])
+    )
+    df['PER'] = df['PER'].clip(5.0, 38.0)
+    
+    # ===== INJURY-AWARE FEATURES (Optional) =====
+    if use_injury_features and INJURY_FEATURES_AVAILABLE:
+        logger.info("   Adding advanced injury features...")
+        
+        # Games Played Ratio (availability throughout season)
+        max_gp = df['GP'].max() if df['GP'].max() > 0 else 1
+        df['GP_RATIO'] = df['GP'] / max_gp
+        
+        # Availability Score (combines GP and injury risk)
+        if 'INJURY_RISK_SCORE' in df.columns:
+            df['AVAILABILITY_SCORE'] = df['GP_RATIO'] * (1 - df['INJURY_RISK_SCORE'])
+        else:
+            df['AVAILABILITY_SCORE'] = df['GP_RATIO']
+        
+        # Recovery Factor (recent return from injury)
+        if 'DAYS_SINCE_INJURY' in df.columns:
+            df['RECOVERY_FACTOR'] = np.where(
+                df['DAYS_SINCE_INJURY'] < 14,
+                0.85,  # 85% within 2 weeks
+                np.where(
+                    df['DAYS_SINCE_INJURY'] < 30,
+                    0.95,  # 95% within a month
+                    1.0    # 100% after a month
+                )
+            )
+        else:
+            df['RECOVERY_FACTOR'] = 1.0
+        
+        # Age-Injury Interaction (older players = higher risk)
+        if 'INJURY_COUNT_LAST_YEAR' in df.columns:
+            df['AGE_INJURY_RISK'] = (df['AGE'] / 30) * df['INJURY_COUNT_LAST_YEAR']
+        else:
+            df['AGE_INJURY_RISK'] = 0
+    
+    logger.info(f"   ✓ Features calculated for {len(df)} players")
+    return df
+
+
+def calculate_injury_adjusted_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adjust training targets based on injury impact
+    Helps model learn true ability vs current injured performance
+    """
+    if not INJURY_FEATURES_AVAILABLE or 'RECOVERY_FACTOR' not in df.columns:
+        df['PTS_TARGET'] = df['PTS_PG'].copy()
+        return df
+    
+    logger.info("   Adjusting targets for injury impact...")
+    
+    df = df.copy()
+    df['PTS_ACTUAL'] = df['PTS_PG'].copy()
+    
+    # For recently injured players, estimate their true ability
+    # (current stats may be suppressed due to injury recovery)
+    df['PTS_ADJUSTED'] = df['PTS_ACTUAL'] / df['RECOVERY_FACTOR']
+    
+    # Cap adjustments at reasonable levels
+    df['PTS_ADJUSTED'] = df['PTS_ADJUSTED'].clip(
+        upper=df['PTS_ACTUAL'] * 1.3  # Max 30% adjustment
+    )
+    
+    # Use adjusted target for players recovering from injury
+    df['PTS_TARGET'] = np.where(
+        df['RECOVERY_FACTOR'] < 1.0,
+        df['PTS_ADJUSTED'],
+        df['PTS_ACTUAL']
+    )
+    
+    adjusted_count = (df['RECOVERY_FACTOR'] < 1.0).sum()
+    logger.info(f"   ✓ Adjusted targets for {adjusted_count} recovering players")
+    
+    return df
+
+
+# ==================== PLAYER MODEL TRAINING ====================
+
+def incremental_train_player_model(retrain_from_scratch: bool = False, season: str = '2025-26'):
+    """
+    Train player model with optional injury awareness
+    Supports incremental learning for efficient daily updates
     
     Args:
         retrain_from_scratch: If True, trains completely new model
                              If False, uses warm_start to update existing model
+        season: NBA season (e.g., '2025-26')
     """
     
     logger.info("="*70)
-    logger.info("NBA BETTING AGENT - INCREMENTAL TRAINING")
+    logger.info("NBA BETTING AGENT - PLAYER MODEL TRAINING")
     if INJURY_FEATURES_AVAILABLE:
-        logger.info("Mode: Injury-Aware Learning ✨")
+        logger.info("Mode: Advanced Injury-Aware Learning ✨")
     else:
         logger.info("Mode: Standard Training")
     logger.info("="*70)
     
-    # Fetch fresh data
-    logger.info("\n[1/5] Fetching latest player stats...")
-    df_players = fetch_current_season_stats()
-    logger.info(f"   Raw players loaded: {len(df_players)}")
+    # ===== STEP 1: FETCH DATA =====
+    logger.info("\n[1/5] Fetching latest player data...")
     
-    # Clean data
+    if INJURY_FEATURES_AVAILABLE:
+        # Use advanced player database (includes inactive/rookies)
+        df_players = refresh_player_database(season)
+        logger.info(f"   Total players in database: {len(df_players)}")
+    else:
+        # Use standard stats fetch
+        df_players = fetch_current_season_stats()
+        logger.info(f"   Players loaded: {len(df_players)}")
+    
+    # ===== STEP 2: FILTER FOR TRAINING =====
     df_players = df_players.dropna(subset=['PLAYER_NAME', 'PTS', 'MIN'])
     df_players = df_players[df_players['GP'] >= 5].copy()
     df_players = df_players[df_players['MIN'] >= 12.0].copy()
-    logger.info(f"   After filtering: {len(df_players)} active players")
+    logger.info(f"   Training candidates: {len(df_players)} active players")
     
-    # Calculate per-game stats
-    df_players['MIN_PG']   = df_players['MIN'].astype(float)
-    df_players['PTS_PG']   = df_players['PTS'].astype(float)
-    df_players['FGA_PG']   = df_players['FGA'].astype(float)
-    df_players['FG3A_PG']  = df_players['FG3A'].astype(float)
-    df_players['FTA_PG']   = df_players['FTA'].astype(float)
-    df_players['AST_PG']   = df_players['AST'].astype(float)
-    df_players['REB_PG']   = df_players['REB'].astype(float)
-    df_players['STL_PG']   = df_players['STL'].astype(float)
-    df_players['BLK_PG']   = df_players['BLK'].astype(float)
-    df_players['TOV_PG']   = df_players['TOV'].astype(float)
-    
-    # Advanced metrics
-    df_players['TS_PCT'] = df_players['PTS'] / (2 * (df_players['FGA'] + 0.44 * df_players['FTA']))
-    df_players['TS_PCT'] = df_players['TS_PCT'].clip(0.40, 0.80).fillna(0.58)
-    
-    if 'USG_PCT' not in df_players.columns or df_players['USG_PCT'].isna().all():
-        poss_est = df_players['FGA_PG'] + 0.44 * df_players['FTA_PG'] + df_players['TOV_PG']
-        df_players['USG_PCT'] = (poss_est / df_players['MIN_PG']) * 48 * 5
-    df_players['USG_PCT'] = df_players['USG_PCT'].clip(12.0, 42.0).fillna(25.0)
-    
-    # Calculate FGM for PER
-    df_players['FGM'] = df_players['FGA_PG'] * df_players.get('FG_PCT', 0.45)
-    
-    df_players['PER'] = (
-        df_players['PTS_PG'] +
-        df_players['REB_PG'] +
-        df_players['AST_PG'] +
-        3 * (df_players['STL_PG'] + df_players['BLK_PG']) -
-        df_players['TOV_PG'] -
-        (df_players['FGA_PG'] - df_players['FGM'])
-    )
-    df_players['PER'] = df_players['PER'].clip(5.0, 38.0)
-    
-    # Fill defaults
-    defaults = {'FG_PCT': 0.45, 'FG3_PCT': 0.35, 'AGE': 27, 'PACE': 100.0}
-    for col, val in defaults.items():
-        if col not in df_players.columns:
-            df_players[col] = val
-        else:
-            df_players[col] = df_players[col].fillna(val)
-    
-    # ===== OPTIONAL: INJURY-AWARE FEATURES =====
+    # ===== STEP 3: FEATURE ENGINEERING =====
     logger.info("\n[2/5] Feature engineering...")
+    df_features = calculate_enhanced_features(
+        df_players, 
+        use_injury_features=INJURY_FEATURES_AVAILABLE
+    )
     
+    # ===== STEP 4: INJURY-ADJUSTED TARGETS =====
+    logger.info("\n[3/5] Preparing training targets...")
+    df_with_targets = calculate_injury_adjusted_targets(df_features)
+    
+    # ===== STEP 5: PREPARE TRAINING DATA =====
+    
+    # Base features (always available)
+    BASE_FEATURES = [
+        'MIN_PG', 'USG_PCT', 'TS_PCT', 'FTA_PG', 'AST_PG',
+        'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE'
+    ]
+    
+    # Injury features (optional)
+    INJURY_FEATURES = [
+        'GP_RATIO', 'AVAILABILITY_SCORE', 'RECOVERY_FACTOR', 'AGE_INJURY_RISK'
+    ]
+    
+    # Combine available features
+    FEATURES = BASE_FEATURES.copy()
     if INJURY_FEATURES_AVAILABLE:
-        try:
-            logger.info("   Adding injury-aware features...")
-            
-            # Update injury history
-            injuries = fetch_live_injuries()
-            injury_builder = InjuryAwareDataBuilder()
-            injury_builder.update_injury_history(injuries)
-            
-            # Add injury features to training data
-            df_players = injury_builder.enhance_training_data(df_players)
-            
-            logger.info("   ✓ Injury features added successfully")
-            
-            # Extended feature set
-            FEATURES = [
-                'MIN_PG', 'USG_PCT', 'TS_PCT', 'FTA_PG', 'AST_PG',
-                'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE'
-            ]
-            
-            # Add injury features if they exist
-            injury_features = [
-                'INJURY_RISK_SCORE', 'DAYS_SINCE_INJURY', 
-                'INJURY_COUNT_LAST_YEAR', 'CHRONIC_INJURY_FLAG',
-                'AVAILABILITY_SCORE', 'RECOVERY_FACTOR', 'AGE_INJURY_RISK'
-            ]
-            
-            for feat in injury_features:
-                if feat in df_players.columns:
-                    FEATURES.append(feat)
-            
-            logger.info(f"   Using {len(FEATURES)} features (including {len(FEATURES) - 11} injury features)")
-            
-        except Exception as e:
-            logger.warning(f"   Injury features failed: {e}")
-            logger.info("   Falling back to standard features")
-            FEATURES = [
-                'MIN_PG', 'USG_PCT', 'TS_PCT', 'FTA_PG', 'AST_PG',
-                'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE'
-            ]
-    else:
-        # Standard feature set
-        FEATURES = [
-            'MIN_PG', 'USG_PCT', 'TS_PCT', 'FTA_PG', 'AST_PG',
-            'FG3A_PG', 'PER', 'FG_PCT', 'FG3_PCT', 'AGE', 'PACE'
-        ]
-        logger.info(f"   Using {len(FEATURES)} standard features")
+        for feat in INJURY_FEATURES:
+            if feat in df_with_targets.columns:
+                FEATURES.append(feat)
     
-    # Prepare training data
-    X = df_players[FEATURES].copy()
-    y = df_players['PTS'].astype(float)
+    # Also check for features from InjuryAwareDataBuilder
+    if INJURY_FEATURES_AVAILABLE and 'INJURY_RISK_SCORE' in df_with_targets.columns:
+        extra_features = [
+            'INJURY_RISK_SCORE', 'DAYS_SINCE_INJURY', 
+            'INJURY_COUNT_LAST_YEAR', 'CHRONIC_INJURY_FLAG'
+        ]
+        for feat in extra_features:
+            if feat in df_with_targets.columns and feat not in FEATURES:
+                FEATURES.append(feat)
+    
+    logger.info(f"   Using {len(FEATURES)} features:")
+    logger.info(f"     • Base: {len(BASE_FEATURES)}")
+    if len(FEATURES) > len(BASE_FEATURES):
+        logger.info(f"     • Injury-aware: {len(FEATURES) - len(BASE_FEATURES)}")
+    
+    # Prepare X and y
+    X = df_with_targets[FEATURES].copy()
+    y = df_with_targets['PTS_TARGET'].astype(float)
     
     # Remove any NaN/Inf
     mask = ~(X.isna().any(axis=1) | np.isinf(X).any(axis=1))
     X = X[mask]
     y = y[mask]
     
-    logger.info(f"\n[3/5] Training player model...")
-    logger.info(f"   Samples: {len(X)} | Mean PPG: {y.mean():.1f}")
+    logger.info(f"\n[4/5] Training player model...")
+    logger.info(f"   Final samples: {len(X)} | Mean PPG: {y.mean():.1f}")
     
+    # Train/test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
     
-    # Load existing model if incremental update
+    # ===== STEP 6: TRAIN MODEL =====
+    
+    # Incremental update if model exists
     if not retrain_from_scratch and Path("models/player_model_2025.pkl").exists():
         logger.info("   Loading existing model for incremental update...")
         try:
             player_model = joblib.load("models/player_model_2025.pkl")
-            # Use warm_start for incremental learning
-            player_model.n_estimators += 100  # Add 100 more trees
-            player_model.fit(X_train, y_train, xgb_model=player_model.get_booster())
-            logger.info("   ✓ Incremental update completed")
+            
+            # Check feature compatibility
+            if hasattr(player_model, 'n_features_in_') and player_model.n_features_in_ != len(FEATURES):
+                logger.warning(f"   Feature mismatch: model has {player_model.n_features_in_}, data has {len(FEATURES)}")
+                logger.info("   Training from scratch instead...")
+                retrain_from_scratch = True
+            else:
+                # Incremental learning: add more trees
+                player_model.n_estimators += 100
+                player_model.fit(X_train, y_train, xgb_model=player_model.get_booster())
+                logger.info("   ✓ Incremental update completed (+100 trees)")
         except Exception as e:
             logger.warning(f"   Failed to load existing model: {e}")
             logger.info("   Training from scratch instead...")
             retrain_from_scratch = True
     
+    # Train from scratch if needed
     if retrain_from_scratch or not Path("models/player_model_2025.pkl").exists():
         logger.info("   Training new model from scratch...")
         player_model = XGBRegressor(
@@ -206,44 +324,50 @@ def incremental_train_player_model(retrain_from_scratch=False):
         )
         player_model.fit(X_train, y_train)
     
-    # Evaluate
+    # ===== STEP 7: EVALUATE =====
     pred_test = player_model.predict(X_test)
     mae = mean_absolute_error(y_test, pred_test)
     r2 = r2_score(y_test, pred_test)
     
-    logger.info(f"   PLAYER MODEL → MAE: {mae:.2f} | R²: {r2:.4f}")
+    logger.info(f"\n   MODEL PERFORMANCE:")
+    logger.info(f"   • MAE: {mae:.2f} points")
+    logger.info(f"   • R²:  {r2:.4f}")
     
     # Feature importance
     if hasattr(player_model, 'feature_importances_'):
         importance = dict(zip(FEATURES, player_model.feature_importances_))
         top_features = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:5]
-        logger.info("   Top 5 Features:")
+        logger.info("\n   TOP 5 FEATURES:")
         for feat, imp in top_features:
-            logger.info(f"     • {feat}: {imp:.4f}")
+            logger.info(f"     {feat:25s} → {imp:.4f}")
     
-    # Save model
+    # ===== STEP 8: SAVE =====
     joblib.dump(player_model, "models/player_model_2025.pkl")
-    logger.info("   ✓ player_model_2025.pkl → SAVED")
-    
-    # Save training data for future incremental updates
-    df_players.to_csv("data/2025_26_players.csv", index=False)
-    logger.info("   ✓ player data → SAVED")
+    df_with_targets.to_csv("data/2025_26_players.csv", index=False)
+    logger.info("\n   ✓ Model and data saved")
     
     return player_model, mae, r2, FEATURES
 
+
+# ==================== TEAM MODEL TRAINING ====================
+
 def train_team_model():
-    """Train team model (less frequent updates needed)"""
+    """
+    Train team total prediction model
+    Less frequent updates needed (team stats change slowly)
+    """
     
-    logger.info("\n[4/5] Training team model...")
+    logger.info("\n[5/5] Training team model...")
     
     df_teams = fetch_team_stats()
     logger.info(f"   Teams loaded: {len(df_teams)}")
     
-    # Find correct column names
+    # Find correct column names (different APIs use different names)
     ortg_col = next((c for c in df_teams.columns if 'OFF' in c.upper() and 'RATING' in c.upper()), 'OFF_RATING')
     drtg_col = next((c for c in df_teams.columns if 'DEF' in c.upper() and 'RATING' in c.upper()), 'DEF_RATING')
     pace_col = next((c for c in df_teams.columns if 'PACE' in c.upper()), 'PACE')
     
+    # Simulate matchups
     X_team_sim = []
     y_total_sim = []
     
@@ -252,6 +376,7 @@ def train_team_model():
         if row1.name == row2.name:
             continue
         
+        # Home team gets +3.5 point advantage
         h_off = float(row1[ortg_col]) + 3.5
         h_def = float(row1[drtg_col])
         h_pace = float(row1[pace_col])
@@ -261,10 +386,12 @@ def train_team_model():
         
         X_team_sim.append([h_off, h_def, h_pace, a_off, a_def, a_pace])
         
+        # Calculate expected points
         avg_pace = (h_pace + a_pace) / 2
         home_pts = ((h_off + a_def) / 2) * avg_pace / 100
         away_pts = ((a_off + h_def) / 2) * avg_pace / 100
         
+        # Add realistic variance
         home_pts *= np.random.normal(1.0, 0.07)
         away_pts *= np.random.normal(1.0, 0.07)
         
@@ -286,26 +413,40 @@ def train_team_model():
     
     joblib.dump(team_model, "models/team_model_2025.pkl")
     df_teams.to_csv("data/2025_26_teams.csv", index=False)
-    logger.info("   ✓ team_model_2025.pkl → SAVED")
+    logger.info("   ✓ Team model saved")
     
     return team_model
 
+
+# ==================== DATA UPDATES ====================
+
 def update_injuries_and_games():
-    """Update injuries and today's games"""
+    """Update daily data: injuries and today's games"""
     
-    logger.info("\n[5/5] Updating injuries and games...")
+    logger.info("\n[BONUS] Updating daily data...")
     
+    # Fetch injuries
     try:
         injuries = fetch_live_injuries()
-        logger.info(f"   ✓ Loaded {len(injuries)} injury reports")
+        logger.info(f"   ✓ {len(injuries)} injury reports")
         pd.DataFrame(injuries).to_csv("data/injuries.csv", index=False)
+        
+        # Update injury history if available
+        if INJURY_FEATURES_AVAILABLE:
+            try:
+                injury_builder = InjuryAwareDataBuilder()
+                injury_builder.update_injury_history(injuries)
+                logger.info("   ✓ Injury history database updated")
+            except Exception as e:
+                logger.warning(f"   Could not update injury history: {e}")
     except Exception as e:
         logger.error(f"   ⚠ Injury fetch failed: {e}")
         injuries = []
     
+    # Fetch today's games
     try:
         games = fetch_todays_games_with_odds()
-        logger.info(f"   ✓ Loaded {len(games)} games for today")
+        logger.info(f"   ✓ {len(games)} games scheduled")
         
         with open("data/todays_games.json", "w") as f:
             json.dump({
@@ -319,29 +460,43 @@ def update_injuries_and_games():
     
     return injuries, games
 
-def main(retrain_from_scratch=False):
-    """Main training pipeline"""
+
+# ==================== MAIN PIPELINE ====================
+
+def main(retrain_from_scratch: bool = False, season: str = '2025-26'):
+    """
+    Main training pipeline
+    
+    Args:
+        retrain_from_scratch: If True, trains completely new models
+        season: NBA season (e.g., '2025-26')
+    """
     
     start_time = datetime.now()
     
-    # Train player model (incremental or from scratch)
-    player_model, mae, r2, features = incremental_train_player_model(retrain_from_scratch)
+    # Train player model (with optional injury awareness)
+    player_model, mae, r2, features = incremental_train_player_model(
+        retrain_from_scratch=retrain_from_scratch,
+        season=season
+    )
     
-    # Train team model (less frequent)
+    # Train team model
     team_model = train_team_model()
     
-    # Update injuries and games
+    # Update daily data
     injuries, games = update_injuries_and_games()
     
     # Save metadata
     metadata = {
-        "version": "v4.0-ENHANCED" if INJURY_FEATURES_AVAILABLE else "v4.0-STANDARD",
+        "version": "v4.0-UNIFIED",
         "training_date": datetime.now().isoformat(),
-        "training_duration_seconds": (datetime.now() - start_time).total_seconds(),
+        "training_duration_seconds": round((datetime.now() - start_time).total_seconds(), 1),
         "retrained_from_scratch": retrain_from_scratch,
+        "season": season,
         "injury_learning_enabled": INJURY_FEATURES_AVAILABLE,
         "player_model": {
             "features": features,
+            "feature_count": len(features),
             "samples": len(pd.read_csv("data/2025_26_players.csv")),
             "mae": round(float(mae), 3),
             "r2": round(float(r2), 4)
@@ -358,27 +513,42 @@ def main(retrain_from_scratch=False):
     with open("models/training_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
     
+    # Final summary
     logger.info("\n" + "="*70)
-    logger.info("TRAINING COMPLETE!")
-    logger.info(f"Duration: {metadata['training_duration_seconds']:.1f}s")
-    logger.info(f"Model Performance: MAE={mae:.2f}, R²={r2:.4f}")
-    if INJURY_FEATURES_AVAILABLE:
-        logger.info("Injury Learning: ✓ Enabled")
-    else:
-        logger.info("Injury Learning: ✗ Not Available (add dynamic_player_handler.py)")
+    logger.info("✓ TRAINING COMPLETE!")
+    logger.info("="*70)
+    logger.info(f"Duration:        {metadata['training_duration_seconds']}s")
+    logger.info(f"Model Version:   {metadata['version']}")
+    logger.info(f"Performance:     MAE={mae:.2f}, R²={r2:.4f}")
+    logger.info(f"Features Used:   {len(features)} ({len(features) - 11} injury features)" if len(features) > 11 else f"Features Used:   {len(features)}")
+    logger.info(f"Injury Learning: {'✓ ENABLED' if INJURY_FEATURES_AVAILABLE else '✗ Not Available'}")
+    logger.info(f"Data Updates:    {len(injuries)} injuries, {len(games)} games")
     logger.info("="*70)
     
     return metadata
 
+
+# ==================== CLI ====================
+
 if __name__ == "__main__":
     import sys
     
-    # Check if --full flag is passed
+    # Parse command line arguments
     full_retrain = "--full" in sys.argv or "-f" in sys.argv
+    season = "2025-26"  # Default season
     
+    # Check for season argument
+    for arg in sys.argv:
+        if arg.startswith("--season="):
+            season = arg.split("=")[1]
+    
+    # Run training
     if full_retrain:
-        logger.info("Running FULL retraining from scratch...")
+        logger.info("🔄 Running FULL retraining from scratch...\n")
     else:
-        logger.info("Running INCREMENTAL update...")
+        logger.info("⚡ Running INCREMENTAL update...\n")
     
-    main(retrain_from_scratch=full_retrain)
+    metadata = main(retrain_from_scratch=full_retrain, season=season)
+    
+    # Exit with success code
+    exit(0)
