@@ -16,6 +16,8 @@ import logging
 
 from name_mapper import get_canonical_name, normalize_name_lower
 
+from contextlib import asynccontextmanager
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -296,11 +298,50 @@ def build_feature_vector(features_dict):
     logger.debug(f"Built vector with {len(values)} features for model expecting {len(TRAINED_FEATURES)}")
     return vector
 
-# ==================== FASTAPI APP ====================
+# Initial injury load — KEEP THIS — runs automatically on startup
+load_injuries_from_csv()   # ← This loads injuries.csv right when the app starts
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start background tasks
+    async def auto_refresh_injuries():
+        while True:
+            await asyncio.sleep(3600)  # 1 hour
+            logger.info(f"[Auto-Refresh] Checking injuries at {datetime.now()}")
+            try:
+                from utils import fetch_live_injuries
+                injuries = fetch_live_injuries()
+                if injuries and len(injuries) > 0:
+                    df = pd.DataFrame(injuries)
+                    df.to_csv(DATA_DIR / "injuries.csv", index=False)
+                    refresh_injuries()  # This reloads INJURY_STATUS from the updated CSV
+                    logger.info(f"Auto-updated {len(injuries)} injuries")
+            except Exception as e:
+                logger.error(f"Auto-refresh failed: {e}")
+
+    async def cleanup_cache():
+        while True:
+            await asyncio.sleep(1800)  # 30 minutes
+            cleared = prediction_cache.clear_old()
+            logger.info(f"Cache cleanup: removed {cleared} stale entries")
+
+    # Launch background tasks
+    asyncio.create_task(auto_refresh_injuries())
+    asyncio.create_task(cleanup_cache())
+    logger.info("Background tasks started")
+
+    # Give control to the app
+    yield
+
+    # Optional: Shutdown cleanup (tasks auto-cancel, but you can log)
+    logger.info("Shutting down — background tasks stopping")
+
+# Create app with lifespan
 app = FastAPI(
-    title=f"NBA Betting Agent Pro — {MODEL_VERSION}", 
+    title=f"NBA Betting Agent Pro — {MODEL_VERSION}",
     version="4.0.0",
-    description="Production-ready NBA prediction API with smart caching"
+    description="Production-ready NBA prediction API with smart caching",
+    lifespan=lifespan  # ← Modern way
 )
 
 app.add_middleware(
@@ -312,40 +353,40 @@ app.add_middleware(
 )
 
 # ==================== BACKGROUND TASKS ====================
-@app.on_event("startup")
-async def startup_event():
-    """Start background tasks"""
+# @app.on_event("startup")
+# async def startup_event():
+#     """Start background tasks"""
     
-    async def auto_refresh_injuries():
-        """Auto-refresh injuries every hour"""
-        while True:
-            await asyncio.sleep(3600)  # 1 hour
+#     async def auto_refresh_injuries():
+#         """Auto-refresh injuries every hour"""
+#         while True:
+#             await asyncio.sleep(3600)  # 1 hour
             
-            logger.info(f"[Auto-Refresh] Checking injuries at {datetime.now()}")
+#             logger.info(f"[Auto-Refresh] Checking injuries at {datetime.now()}")
             
-            try:
-                from utils import fetch_live_injuries
-                injuries = fetch_live_injuries()
+#             try:
+#                 from utils import fetch_live_injuries
+#                 injuries = fetch_live_injuries()
                 
-                if injuries and len(injuries) > 0:
-                    df = pd.DataFrame(injuries)
-                    df.to_csv(DATA_DIR / "injuries.csv", index=False)
-                    refresh_injuries()
-                    logger.info(f"Auto-updated {len(injuries)} injuries")
+#                 if injuries and len(injuries) > 0:
+#                     df = pd.DataFrame(injuries)
+#                     df.to_csv(DATA_DIR / "injuries.csv", index=False)
+#                     refresh_injuries()
+#                     logger.info(f"Auto-updated {len(injuries)} injuries")
                     
-            except Exception as e:
-                logger.error(f"Auto-refresh failed: {e}")
+#             except Exception as e:
+#                 logger.error(f"Auto-refresh failed: {e}")
     
-    async def cleanup_cache():
-        """Clean up stale cache entries every 30 minutes"""
-        while True:
-            await asyncio.sleep(1800)  # 30 minutes
-            cleared = prediction_cache.clear_old()
-            logger.info(f"Cache cleanup: removed {cleared} stale entries")
+#     async def cleanup_cache():
+#         """Clean up stale cache entries every 30 minutes"""
+#         while True:
+#             await asyncio.sleep(1800)  # 30 minutes
+#             cleared = prediction_cache.clear_old()
+#             logger.info(f"Cache cleanup: removed {cleared} stale entries")
     
-    asyncio.create_task(auto_refresh_injuries())
-    asyncio.create_task(cleanup_cache())
-    logger.info("Background tasks started")
+#     asyncio.create_task(auto_refresh_injuries())
+#     asyncio.create_task(cleanup_cache())
+#     logger.info("Background tasks started")
 
 # ==================== REQUEST MODELS ====================
 class PlayerRequest(BaseModel):

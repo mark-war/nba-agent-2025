@@ -1,49 +1,50 @@
 player_name,team,status,injury_type
 Trae Young,UNK,OUT,Injury
-Jalen Johnson,UNK,OUT,Injury
-Kristaps Porzingis,UNK,OUT,Injury
 N'Faly Dante,UNK,OUT,Injury
 Eli John Ndiaye,UNK,OUT,Injury
 Chris Boucher,UNK,OUT,Injury
 Amari Williams,UNK,OUT,Injury
 Jayson Tatum,BOS,OUT,"Achilles (rehab, possible late return)"
 Haywood Highsmith,UNK,OUT,Injury
-Kon Knueppel,UNK,OUT,Injury
-Miles Bridges,UNK,OUT,Injury
-Mason Plumlee,UNK,OUT,Injury
+Pat Connaughton,UNK,OUT,Injury
 Ryan Kalkbrenner,UNK,OUT,Injury
+Mason Plumlee,UNK,OUT,Injury
+Miles Bridges,UNK,OUT,Injury
+Kon Knueppel,UNK,OUT,Injury
 Grant Williams,UNK,OUT,Injury
-Emanuel Miller,UNK,OUT,Injury
+Josh Giddey,UNK,OUT,Injury
 Lachlan Olbrich,UNK,OUT,Injury
 Trentyn Flowers,UNK,OUT,Injury
-Josh Giddey,UNK,OUT,Injury
+Emanuel Miller,UNK,OUT,Injury
 Coby White,UNK,OUT,Injury
 Zach Collins,UNK,OUT,Injury
 Noa Essengue,UNK,OUT,Injury
 Larry Nance Jr.,UNK,OUT,Injury
 Max Strus,UNK,OUT,Injury
+Sam Merrill,UNK,OUT,Injury
 Anthony Davis,UNK,OUT,Injury
 Dereck Lively II,UNK,OUT,Injury
 Kyrie Irving,UNK,OUT,Injury
 Dante Exum,UNK,OUT,Injury
+Julian Strawther,UNK,OUT,Injury
 Nikola Jokic,UNK,OUT,Injury
 Aaron Gordon,UNK,OUT,Injury
 Christian Braun,UNK,OUT,Injury
 Cameron Johnson,UNK,OUT,Injury
 Tamar Bates,UNK,OUT,Injury
+Tobias Harris,UNK,OUT,Injury
 Caris LeVert,UNK,OUT,Injury
 Wendell Moore Jr.,UNK,OUT,Injury
-Al Horford,UNK,OUT,Injury
 L.J. Cryer,UNK,OUT,Injury
 Seth Curry,UNK,OUT,Injury
 Alperen Sengun,UNK,OUT,Injury
 Steven Adams,UNK,OUT,Injury
 Fred VanVleet,UNK,OUT,Injury
-Ben Sheppard,UNK,OUT,Injury
 Isaiah Jackson,UNK,OUT,Injury
+T.J. McConnell,UNK,OUT,Injury
+Ben Sheppard,UNK,OUT,Injury
 Obi Toppin,UNK,OUT,Injury
 Tyrese Haliburton,IND,OUT,"Achilles (surgery, season-ending)"
-John Collins,UNK,OUT,Injury
 Bogdan Bogdanovic,UNK,OUT,Injury
 Ivica Zubac,UNK,OUT,Injury
 Bradley Beal,UNK,OUT,Injury
@@ -52,7 +53,6 @@ Gabe Vincent,UNK,OUT,Injury
 Austin Reaves,UNK,OUT,Injury
 Vince Williams Jr.,UNK,OUT,Injury
 Kentavious Caldwell-Pope,UNK,OUT,Injury
-Jock Landale,UNK,OUT,Injury
 Brandon Clarke,UNK,OUT,Injury
 John Konchar,UNK,OUT,Injury
 Zach Edey,UNK,OUT,Injury
@@ -65,45 +65,45 @@ Taurean Prince,UNK,OUT,Injury
 Terrence Shannon Jr.,UNK,OUT,Injury
 Herbert Jones,UNK,OUT,Injury
 Dejounte Murray,UNK,OUT,Injury
-Mitchell Robinson,UNK,OUT,Injury
+Tyler Kolek,UNK,OUT,Injury
 Ariel Hukporti,UNK,OUT,Injury
+Mitchell Robinson,UNK,OUT,Injury
 Landry Shamet,UNK,OUT,Injury
 Josh Hart,UNK,OUT,Injury
-Brooks Barnhizer,UNK,OUT,Injury
-Isaiah Hartenstein,UNK,OUT,Injury
-Jaylin Williams,UNK,OUT,Injury
 Ousmane Dieng,UNK,OUT,Injury
+Jaylin Williams,UNK,OUT,Injury
+Isaiah Hartenstein,UNK,OUT,Injury
+Brooks Barnhizer,UNK,OUT,Injury
 Nikola Topic,UNK,OUT,Injury
 Thomas Sorber,UNK,OUT,Injury
 Jonathan Isaac,UNK,OUT,Injury
-Franz Wagner,UNK,OUT,Injury
 Jalen Suggs,UNK,OUT,Injury
+Desmond Bane,UNK,OUT,Injury
+Franz Wagner,UNK,OUT,Injury
 Moritz Wagner,UNK,OUT,Injury
 Colin Castleton,UNK,OUT,Injury
-Joel Embiid,UNK,OUT,Injury
-Trendon Watford,UNK,OUT,Injury
 Kelly Oubre Jr.,UNK,OUT,Injury
+Trendon Watford,UNK,OUT,Injury
 Ryan Dunn,UNK,OUT,Injury
 Grayson Allen,UNK,OUT,Injury
 Jalen Green,UNK,OUT,Injury
 Kris Murray,UNK,OUT,Injury
+Jerami Grant,UNK,OUT,Injury
 Matisse Thybulle,UNK,OUT,Injury
 Scoot Henderson,UNK,OUT,Injury
 Jrue Holiday,UNK,OUT,Injury
-Jerami Grant,UNK,OUT,Injury
 Blake Wesley,UNK,OUT,Injury
 Damian Lillard,POR,OUT,Achilles (not returning 2025-26)
 Zach LaVine,UNK,OUT,Injury
-Keegan Murray,UNK,OUT,Injury
 Domantas Sabonis,UNK,OUT,Injury
-RJ Barrett,UNK,OUT,Injury
+Devin Vassell,UNK,OUT,Injury
+Stephon Castle,UNK,OUT,Injury
 Jakob Poeltl,UNK,OUT,Injury
 Georges Niang,UNK,OUT,Injury
-Keyonte George,UNK,OUT,Injury
 Kevin Love,UNK,OUT,Injury
 Ace Bailey,UNK,OUT,Injury
 Walker Kessler,UNK,OUT,Injury
-Khris Middleton,UNK,OUT,Injury
+Malaki Branham,UNK,OUT,Injury
 Kyshawn George,UNK,OUT,Injury
 Corey Kispert,UNK,OUT,Injury
 Cam Whitmore,UNK,OUT,Injury
